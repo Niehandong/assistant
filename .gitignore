@@ -11,9 +11,10 @@ __pycache__/
 htmlcov/
 
 # ===== 后端配置（只提交 .env.example）=====
-backend/.env
-backend/.env.*
-!backend/.env.example
+backend/**/.env
+backend/**/.env.*
+!backend/**/.env.example
+backend/.secrets/
 
 # ===== 前端 =====
 node_modules/
@@ -24,12 +25,14 @@ frontend/.env.local
 frontend/.env.*.local
 
 # ===== 测试代码与运行产物（不进 git；测试报告 docs/**/test-report.md 进 git）=====
-backend/tests/
+backend/**/tests/
+backend/tests_e2e_api/
 frontend/e2e/
 frontend/src/**/*.test.ts
 frontend/src/**/*.test.tsx
 frontend/src/**/*.spec.ts
 frontend/src/**/*.spec.tsx
+frontend/src/test-setup.ts
 frontend/vitest.config.*
 frontend/playwright.config.*
 frontend/coverage/
@@ -38,6 +41,7 @@ frontend/test-results/
 frontend/blob-report/
 
 # ===== 本地数据 / 日志 =====
+.run/
 .docker-data/
 logs/
 *.log

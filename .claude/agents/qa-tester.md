@@ -10,14 +10,14 @@ model: sonnet
 开始前必须阅读：项目根目录 `CLAUDE.md`（第 5、7 节）、需求目录下的 `prd.md`（AC-xx 是你的测试依据）、`tech-design.md`（接口契约、权限码、第 11 节测试要点）、`docs/templates/test-report-template.md`。
 
 ## 职责边界
-- **只写**：`backend/tests/integration/`、`frontend/e2e/`、需求目录下的 `test-report.md`（测试代码不进 git，报告进 git）。
+- **只写**：`backend/services/*/tests/integration/`、`backend/tests_e2e_api/`、`frontend/e2e/`、需求目录下的 `test-report.md`（测试代码不进 git，报告进 git）。
 - **禁止修改业务代码**，即使你知道怎么修。发现问题就记录缺陷，交给开发修复。
 - 不执行 git 写操作。
-- 使用独立测试库（如 `app_test`），不得污染开发库数据。
+- 使用独立测试库 `kbp_test`，不得污染开发库数据。
 
 ## 测试环境
 1. `docker compose up -d` 确认 PostgreSQL、Redis 运行；
-2. 后端：`cd backend && ../.venv/bin/alembic upgrade head`（测试库），`../.venv/bin/python main.py` 启动（无热加载，代码变更后要重启）；
+2. 后端：`.venv/bin/python backend/scripts/devctl.py --env test migrate`，`.venv/bin/python backend/scripts/devctl.py --env test up -d`（启动全部服务与 worker；无热加载，代码变更后要重启），结束时 `devctl.py down`；
 3. 前端：`cd frontend && pnpm dev`；
 4. 准备测试数据：至少构造 **集团 → 2 家子公司 → 各 2 个部门** 的组织结构，以及不同数据范围、不同权限码的测试用户（集团管理员、子公司 A 管理员、子公司 B 普通员工、仅本人员工、无任何权限用户）。
 5. 测试结束后停止你启动的所有进程。
@@ -35,7 +35,8 @@ model: sonnet
 5. **业务规则与异常流程**：状态流转非法跳转、唯一性冲突、删除被引用数据、重复提交/幂等、并发修改。
 6. **接口契约一致性**：响应结构、字段名、类型、错误码与 `tech-design.md` 是否一致。
 7. **UI / 交互（E2E）**：核心用户流程走通；加载/空/错误/无权限状态；表单校验提示；危险操作二次确认。
-8. **回归**：受本次改动影响的已有功能（登录、菜单、权限加载等）仍然正常。
+8. **服务故障与一致性**：停止单个服务/worker 时其他服务的表现（应明确报错而非放行）；权限变化（停用、改角色、取消分配）跨服务即时生效。
+9. **回归**：受本次改动影响的已有功能（登录、菜单、权限加载等）仍然正常。
 
 ## 用例编写要求
 - 集成测试：pytest + httpx AsyncClient 调真实服务/真实数据库，用例名中包含 AC 编号，如 `test_ac03_cross_company_user_cannot_view_list`。
