@@ -1077,6 +1077,17 @@ export interface components {
       company_id: number;
       /** Version */
       version: number;
+      /**
+       * Manageable
+       * @default true
+       */
+      manageable: boolean;
+      /** Disable Blocked Reason */
+      disable_blocked_reason?: string | null;
+      /** Delete Blocked Reason */
+      delete_blocked_reason?: string | null;
+      /** Move Blocked Reason */
+      move_blocked_reason?: string | null;
       /** Created At */
       created_at: string;
       /** Children */
@@ -1094,6 +1105,11 @@ export interface components {
       org_type: string;
       /** Status */
       status: string;
+      /**
+       * Manageable
+       * @default true
+       */
+      manageable: boolean;
       /** Children */
       children?: components['schemas']['OrgOption'][];
     };
@@ -1439,6 +1455,11 @@ export interface components {
       created_at: string;
       /** Version */
       version: number;
+      /**
+       * Manageable
+       * @default true
+       */
+      manageable: boolean;
     };
     /** UserStatusBody */
     UserStatusBody: {

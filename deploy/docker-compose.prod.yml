@@ -1,0 +1,269 @@
+# 生产编排：nginx(前端) + iam + kb + kb-worker + open + PostgreSQL + Redis + MinIO，以及一次性迁移任务。
+# 用法（在仓库根目录）：
+#   docker compose -p kbp-prod --env-file deploy/.env.prod -f deploy/docker-compose.prod.yml up -d --build
+# 变量说明见 deploy/.env.prod.example；部署说明见 deploy/README.md。
+# 除 nginx 外不向宿主机映射任何端口；内部接口 /internal/ 仅在 compose 网络内可达。
+
+name: kbp-prod
+
+x-backend-common: &backend-common
+  restart: unless-stopped
+  networks: [kbp]
+  environment: &backend-env
+    APP_ENV: prod
+    HOST: 0.0.0.0
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    REDIS_URL: redis://:${REDIS_PASSWORD:?必须设置 REDIS_PASSWORD}@redis:6379/0
+    JWT_PUBLIC_KEY_FILE: /run/jwt/jwt_public.pem
+    JWT_ISSUER: ${JWT_ISSUER:-kbp-iam}
+    INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?必须设置 INTERNAL_API_TOKEN（至少 32 位随机串）}
+    IAM_INTERNAL_URL: http://iam:8301
+    KB_INTERNAL_URL: http://kb:8302
+    OPEN_INTERNAL_URL: http://open:8303
+    # 只信任前端 nginx 容器；不得包含 127.0.0.1、0.0.0.0/0 或宿主机网段
+    TRUSTED_PROXIES: '["${NGINX_IP:-172.31.77.10}/32"]'
+    TIMEZONE: ${TIMEZONE:-Asia/Shanghai}
+
+x-kb-env: &kb-env
+  <<: *backend-env
+  DATABASE_URL: postgresql+asyncpg://kbp_kb:${KB_DB_PASSWORD:?必须设置 KB_DB_PASSWORD}@postgres:5432/kbp
+  MODEL_SECRET_KEY: ${MODEL_SECRET_KEY:?必须设置 MODEL_SECRET_KEY（Fernet key）}
+  S3_ENDPOINT: http://minio:9000
+  S3_ACCESS_KEY: ${MINIO_ROOT_USER:?必须设置 MINIO_ROOT_USER}
+  S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?必须设置 MINIO_ROOT_PASSWORD}
+  S3_BUCKET: ${S3_BUCKET:-kbp-files}
+
+x-jwt-public: &jwt-public
+  - ${JWT_KEYS_DIR:?必须设置 JWT_KEYS_DIR}/jwt_public.pem:/run/jwt/jwt_public.pem:ro
+
+services:
+  # ---------------------------------------------------------------- 中间件
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    networks: [kbp]
+    # 参数默认值为 16 核 / 64GB 专用 DB 主机（tech-design-m2 3.10.3 生产列，样例见 deploy/prod/postgres-params.example.conf），
+    # 按实际内存比例在 .env.prod 中覆盖（README 有换算方法）。shm_size 须 >= maintenance_work_mem（HNSW 并行构建用共享内存）。
+    shm_size: ${PG_SHM_SIZE:-16gb}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-16GB}
+      - -c
+      - effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-48GB}
+      - -c
+      - work_mem=${PG_WORK_MEM:-64MB}
+      - -c
+      - maintenance_work_mem=${PG_MAINTENANCE_WORK_MEM:-8GB}
+      - -c
+      - max_worker_processes=${PG_MAX_WORKER_PROCESSES:-32}
+      - -c
+      - max_parallel_workers=${PG_MAX_PARALLEL_WORKERS:-16}
+      - -c
+      - max_parallel_workers_per_gather=4
+      - -c
+      - max_parallel_maintenance_workers=${PG_MAX_PARALLEL_MAINTENANCE_WORKERS:-8}
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - jit=off
+      - -c
+      - max_connections=${PG_MAX_CONNECTIONS:-400}
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-kbp_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?必须设置 POSTGRES_PASSWORD}
+      POSTGRES_DB: kbp
+      IAM_DB_PASSWORD: ${IAM_DB_PASSWORD:?必须设置 IAM_DB_PASSWORD}
+      KB_DB_PASSWORD: ${KB_DB_PASSWORD:?必须设置 KB_DB_PASSWORD}
+      OPEN_DB_PASSWORD: ${OPEN_DB_PASSWORD:?必须设置 OPEN_DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./prod/initdb/00-init-roles.sh:/docker-entrypoint-initdb.d/00-init-roles.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kbp_admin} -d kbp"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks: [kbp]
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?必须设置 REDIS_PASSWORD}"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+  minio:
+    image: minio/minio
+    restart: unless-stopped
+    networks: [kbp]
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?必须设置 MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?必须设置 MINIO_ROOT_PASSWORD}
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # ---------------------------------------------------------------- 一次性任务：迁移 / 建桶
+  iam-migrate:
+    image: kbp-iam:${KBP_VERSION:-dev}
+    build: {context: ../backend, args: {SERVICE: iam}}
+    restart: "no"
+    networks: [kbp]
+    command: ["sh", "-c", "alembic upgrade head && python -m app.seed"]
+    environment:
+      <<: *backend-env
+      DATABASE_URL: postgresql+asyncpg://kbp_iam:${IAM_DB_PASSWORD}@postgres:5432/kbp
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:?必须设置 SEED_ADMIN_PASSWORD}
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck: {disable: true}
+
+  kb-migrate:
+    image: kbp-kb:${KBP_VERSION:-dev}
+    build: {context: ../backend, args: {SERVICE: kb}}
+    restart: "no"
+    networks: [kbp]
+    command: ["alembic", "upgrade", "head"]  # 以 kbp_kb 账号执行，保证 kb 表的 owner 为 kbp_kb
+    environment: *kb-env
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck: {disable: true}
+
+  open-migrate:
+    image: kbp-open:${KBP_VERSION:-dev}
+    build: {context: ../backend, args: {SERVICE: open}}
+    restart: "no"
+    networks: [kbp]
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      <<: *backend-env
+      DATABASE_URL: postgresql+asyncpg://kbp_open:${OPEN_DB_PASSWORD}@postgres:5432/kbp
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck: {disable: true}
+
+  minio-init:
+    image: kbp-kb:${KBP_VERSION:-dev}
+    restart: "no"
+    networks: [kbp]
+    command:
+      - python
+      - -c
+      - |
+        import os, boto3
+        c = boto3.client("s3", endpoint_url=os.environ["S3_ENDPOINT"], aws_access_key_id=os.environ["S3_ACCESS_KEY"],
+                         aws_secret_access_key=os.environ["S3_SECRET_KEY"], region_name="us-east-1")
+        names = {b["Name"] for b in c.list_buckets()["Buckets"]}
+        b = os.environ["S3_BUCKET"]
+        if b not in names:
+            c.create_bucket(Bucket=b)
+        print("bucket ok:", b)
+    environment: *kb-env
+    depends_on:
+      minio: {condition: service_healthy}
+      kb-migrate: {condition: service_completed_successfully}
+    healthcheck: {disable: true}
+
+  # ---------------------------------------------------------------- 业务服务
+  iam:
+    <<: *backend-common
+    image: kbp-iam:${KBP_VERSION:-dev}
+    build: {context: ../backend, args: {SERVICE: iam}}
+    environment:
+      <<: *backend-env
+      DATABASE_URL: postgresql+asyncpg://kbp_iam:${IAM_DB_PASSWORD}@postgres:5432/kbp
+      JWT_PRIVATE_KEY_FILE: /run/jwt/jwt_private.pem
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD}
+      KB_STATS_ENABLED: "true"
+      OPEN_STATS_ENABLED: "true"
+    volumes:
+      - ${JWT_KEYS_DIR}/jwt_public.pem:/run/jwt/jwt_public.pem:ro
+      - ${JWT_KEYS_DIR}/jwt_private.pem:/run/jwt/jwt_private.pem:ro
+    depends_on:
+      iam-migrate: {condition: service_completed_successfully}
+
+  kb:
+    <<: *backend-common
+    image: kbp-kb:${KBP_VERSION:-dev}
+    build: {context: ../backend, args: {SERVICE: kb}}
+    environment: *kb-env
+    volumes: *jwt-public
+    depends_on:
+      kb-migrate: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+      iam: {condition: service_healthy}
+
+  # 文档处理 / HNSW 建索引 worker；扩容：--scale kb-worker=4
+  kb-worker:
+    <<: *backend-common
+    image: kbp-kb:${KBP_VERSION:-dev}
+    command: ["python", "worker.py"]
+    environment: *kb-env
+    volumes: *jwt-public
+    healthcheck: {disable: true}  # worker 无 HTTP 端口
+    depends_on:
+      kb-migrate: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+      iam: {condition: service_healthy}
+
+  open:
+    <<: *backend-common
+    image: kbp-open:${KBP_VERSION:-dev}
+    build: {context: ../backend, args: {SERVICE: open}}
+    environment:
+      <<: *backend-env
+      DATABASE_URL: postgresql+asyncpg://kbp_open:${OPEN_DB_PASSWORD}@postgres:5432/kbp
+      API_KEY_PEPPER: ${API_KEY_PEPPER:?必须设置 API_KEY_PEPPER（一经设置不可更换）}
+      KB_RETRIEVAL_URL: ${KB_RETRIEVAL_URL:-http://kb:8302}
+    volumes: *jwt-public
+    depends_on:
+      open-migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+      iam: {condition: service_healthy}
+
+  nginx:
+    image: kbp-frontend:${KBP_VERSION:-dev}
+    build: {context: ../frontend}
+    restart: unless-stopped
+    environment:
+      IAM_UPSTREAM: iam:8301
+      KB_UPSTREAM: kb:8302
+      OPEN_UPSTREAM: open:8303
+    ports:
+      - "${NGINX_HOST_PORT:-80}:80"
+    networks:
+      kbp:
+        ipv4_address: ${NGINX_IP:-172.31.77.10}
+    depends_on:
+      iam: {condition: service_healthy}
+      kb: {condition: service_healthy}
+      open: {condition: service_healthy}
+
+networks:
+  kbp:
+    ipam:
+      config:
+        - subnet: ${KBP_SUBNET:-172.31.77.0/24}
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:

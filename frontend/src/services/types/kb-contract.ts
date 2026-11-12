@@ -1,7 +1,8 @@
 /**
  * kb 服务接口契约类型（按 tech-design-m2.md 第 5 节手写）。
  * 后端 OpenAPI 就绪后，以 `pnpm gen:api` 生成到 src/services/types/kb.d.ts 的类型为准，
- * 届时本文件应改为从生成类型派生并核对差异。
+ * 2026-11-12 已与生成类型逐字段核对（字段名、可空性、枚举、查询参数、路径、错误码），无需修正；
+ * 本文件保留为更严格的业务类型（枚举字面量、请求体可选项），生成类型由后端默认值导致部分字段标为必填/可选，仅作对照。
  */
 import type { ApiResponse, EnableStatus, PageResult } from './iam-contract';
 

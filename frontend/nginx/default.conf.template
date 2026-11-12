@@ -1,0 +1,82 @@
+# envsubst 仅替换 *_UPSTREAM 变量（NGINX_ENVSUBST_FILTER），nginx 自身 $变量不受影响
+server {
+    listen 80;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    client_max_body_size 20m;
+    server_tokens off;
+
+    gzip on;
+    gzip_types text/plain text/css application/javascript application/json image/svg+xml;
+
+    # 通用代理头：X-Forwarded-For 以 $remote_addr 覆盖，不信任客户端传入值
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Request-Id $http_x_request_id;
+    proxy_set_header Connection "";
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 60s;
+    proxy_send_timeout 60s;
+
+    # 内部接口永不对外
+    location /internal/ {
+        return 404;
+    }
+
+    location /api/v1/auth/ {
+        proxy_pass http://${IAM_UPSTREAM};
+    }
+    location /api/v1/system/ {
+        proxy_pass http://${IAM_UPSTREAM};
+    }
+
+    # 文档上传/预览（解析）：放宽读写超时
+    location ~ ^/api/v1/kb/datasets/[^/]+/(upload-files|documents/preview)$ {
+        proxy_pass http://${KB_UPSTREAM};
+        proxy_request_buffering off;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+    # 检索：放宽读超时
+    location ~ ^/api/v1/kb/datasets/[^/]+/retrieve-test$ {
+        proxy_pass http://${KB_UPSTREAM};
+        proxy_read_timeout 180s;
+    }
+    # 其余 kb 接口含文件下载：关闭响应缓冲，流式透传 Content-Disposition 等头
+    location /api/v1/kb/ {
+        proxy_pass http://${KB_UPSTREAM};
+        proxy_buffering off;
+        proxy_read_timeout 120s;
+    }
+
+    location /api/v1/open-platform/ {
+        proxy_pass http://${OPEN_UPSTREAM};
+    }
+    location /api/v1/open/ {
+        proxy_pass http://${OPEN_UPSTREAM};
+        proxy_read_timeout 120s;
+    }
+
+    # 未匹配的 /api/ 不回退到 SPA
+    location /api/ {
+        return 404;
+    }
+
+    # 带 hash 的构建产物：长期缓存
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        try_files $uri =404;
+    }
+
+    # index.html 不缓存；SPA 路由回退
+    location / {
+        add_header Cache-Control "no-store, no-cache, must-revalidate";
+        try_files $uri $uri/ /index.html;
+    }
+}

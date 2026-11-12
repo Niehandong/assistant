@@ -7,6 +7,8 @@ asyncpg==0.32.0
 alembic==1.20.1
 redis==8.1.0
 httpx==0.28.1
+# httpcore 运行时探测异步库所用；缺失时每次请求多扫描一次 sys.path（BE-27 压测发现）
+sniffio==1.3.1
 pyjwt[crypto]==2.15.1
 cryptography==50.0.2
 bcrypt==5.0.0
