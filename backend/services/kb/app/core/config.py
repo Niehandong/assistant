@@ -63,6 +63,11 @@ class Settings(BaseServiceSettings):
 
     def validate_for_runtime(self) -> None:
         super().validate_for_runtime()
+        if self.TASK_CLAIM_IDLE_SECONDS <= self.DOC_LOCK_TTL_SECONDS:
+            raise RuntimeError(
+                f"TASK_CLAIM_IDLE_SECONDS（{self.TASK_CLAIM_IDLE_SECONDS}）必须大于 DOC_LOCK_TTL_SECONDS"
+                f"（{self.DOC_LOCK_TTL_SECONDS}）：否则接管的 worker 会把任务当作重复投递丢弃"
+            )
         if self.APP_ENV not in RELAXED_ENVS and self.MODEL_SECRET_KEY == DEFAULT_MODEL_SECRET_KEY:
             raise RuntimeError(f"APP_ENV={self.APP_ENV} 时必须覆盖配置项 MODEL_SECRET_KEY（不能使用开发默认值）")
         try:

@@ -1,18 +1,19 @@
-import type { ReactNode } from 'react';
-import DatasetDetailRoutes from '@/pages/kb/detail/routes';
-import DatasetListPage from '@/pages/kb/list';
-import ApiDocsPage from '@/pages/openapi/docs';
-import ApiKeysPage from '@/pages/openapi/keys';
-import CallLogPage from '@/pages/openapi/logs';
-import ApiKeyAuditPage from '@/pages/system/apikey-audit';
-import AdminDatasetPage from '@/pages/system/dataset';
-import AdminDatasetDetailPage from '@/pages/system/dataset/detail';
-import LoginLogPage from '@/pages/system/log/login';
-import OperationLogPage from '@/pages/system/log/operation';
-import ModelPage from '@/pages/system/model';
-import OrgPage from '@/pages/system/org';
-import RolePage from '@/pages/system/role';
-import UserPage from '@/pages/system/user';
+/* eslint-disable react-refresh/only-export-components -- 路由表文件同时声明懒加载页面组件，无热更新诉求 */
+import { lazy, type ReactNode } from 'react';
+const DatasetDetailRoutes = lazy(() => import('@/pages/kb/detail/routes'));
+const DatasetListPage = lazy(() => import('@/pages/kb/list'));
+const ApiDocsPage = lazy(() => import('@/pages/openapi/docs'));
+const ApiKeysPage = lazy(() => import('@/pages/openapi/keys'));
+const CallLogPage = lazy(() => import('@/pages/openapi/logs'));
+const ApiKeyAuditPage = lazy(() => import('@/pages/system/apikey-audit'));
+const AdminDatasetPage = lazy(() => import('@/pages/system/dataset'));
+const AdminDatasetDetailPage = lazy(() => import('@/pages/system/dataset/detail'));
+const LoginLogPage = lazy(() => import('@/pages/system/log/login'));
+const OperationLogPage = lazy(() => import('@/pages/system/log/operation'));
+const ModelPage = lazy(() => import('@/pages/system/model'));
+const OrgPage = lazy(() => import('@/pages/system/org'));
+const RolePage = lazy(() => import('@/pages/system/role'));
+const UserPage = lazy(() => import('@/pages/system/user'));
 
 /** 路由元信息：perm 为进入该路由所需权限码（满足任一即可） */
 export interface RouteMeta {

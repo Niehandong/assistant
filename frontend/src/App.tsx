@@ -1,5 +1,5 @@
 import { App as AntdApp, ConfigProvider, Empty } from 'antd';
-import zhCN from 'antd/locale/zh_CN';
+import zhCN from './locale';
 import dayjs from 'dayjs';
 import 'dayjs/locale/zh-cn';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';

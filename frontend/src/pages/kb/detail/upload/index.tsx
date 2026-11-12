@@ -42,7 +42,7 @@ export default function UploadPage() {
 
   const [step, setStep] = useState(0);
   const [items, setItems] = useState<UploadItem[]>([]);
-  const [rule, setRule] = useState<RuleFormValue>(() =>
+  const [rule, setRuleState] = useState<RuleFormValue>(() =>
     dataset.last_process_rule
       ? {
           ...fromProcessRule(dataset.last_process_rule, dataset.chunk_mode ?? 'general'),
@@ -50,6 +50,16 @@ export default function UploadPage() {
         }
       : defaultRule(dataset.chunk_mode ?? 'general'),
   );
+  // 仅当规则仍是未被用户修改的默认值时，才按模型上限自动夹取默认长度
+  const ruleTouched = useRef(!!dataset.last_process_rule);
+  const setRule = useCallback((v: RuleFormValue) => {
+    ruleTouched.current = true;
+    setRuleState(v);
+  }, []);
+  useEffect(() => {
+    if (ruleTouched.current || maxInput == null) return;
+    setRuleState(defaultRule(dataset.chunk_mode ?? 'general', maxInput));
+  }, [maxInput, dataset.chunk_mode]);
   const [blocked, setBlocked] = useState<BlockedMap>({});
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState<SubmittedDoc[]>([]);

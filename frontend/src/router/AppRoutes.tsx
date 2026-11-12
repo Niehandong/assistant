@@ -1,3 +1,5 @@
+import { Spin } from 'antd';
+import { Suspense } from 'react';
 import { Route, Routes } from 'react-router-dom';
 import BasicLayout from '@/layouts/BasicLayout';
 import ChangePasswordPage from '@/pages/auth/change-password';
@@ -37,7 +39,13 @@ export function AppRoutes() {
           <Route
             key={r.path}
             path={r.path}
-            element={<RequirePerm perm={r.meta?.perm}>{r.element}</RequirePerm>}
+            element={
+              <RequirePerm perm={r.meta?.perm}>
+                <Suspense fallback={<Spin style={{ display: 'block', margin: '80px auto' }} />}>
+                  {r.element}
+                </Suspense>
+              </RequirePerm>
+            }
           />
         ))}
         <Route path="*" element={<NotFoundPage />} />

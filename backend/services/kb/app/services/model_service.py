@@ -200,17 +200,32 @@ async def _in_use(session: AsyncSession, model: AiModel, err: tuple[int, str]) -
     return BizError(*err, {"datasets": names, "total": total})
 
 
+def _raise_mapped(exc: IntegrityError) -> None:
+    """把唯一约束冲突映射为业务错误；未识别的原样抛出。"""
+    constraint = str(getattr(exc.orig, "constraint_name", "") or exc.orig)
+    if "uq_ai_model_name" in constraint:
+        raise BizError(*ERR_DUP_NAME) from exc
+    if "uq_ai_model_default" in constraint:
+        raise BizError(*CommonErrors.VERSION_CONFLICT) from exc
+
+
+async def _flush(session: AsyncSession) -> None:
+    """显式 flush：并发下唯一索引兜底（name 同名 → 409304），避免 IntegrityError 冒泡成 500。"""
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        await session.rollback()
+        _raise_mapped(exc)
+        raise
+
+
 async def _commit(session: AsyncSession, model: AiModel | None = None) -> None:
     """提交；给出 model 时刷新（updated_at 等由数据库生成的列提交后会过期）。"""
     try:
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
-        constraint = str(getattr(exc.orig, "constraint_name", "") or exc.orig)
-        if "uq_ai_model_name" in constraint:
-            raise BizError(*ERR_DUP_NAME) from exc
-        if "uq_ai_model_default" in constraint:
-            raise BizError(*CommonErrors.VERSION_CONFLICT) from exc
+        _raise_mapped(exc)
         raise
     if model is not None:
         await session.refresh(model)
@@ -288,7 +303,7 @@ async def create_model(session: AsyncSession, ctx: AuthContext, request: Request
             await model_repo.clear_default(session, body.model_type, except_id=None, operator_id=ctx.user_id)
             model.is_default = True
         session.add(model)
-        await session.flush()
+        await _flush(session)
         if body.status == ENABLED:
             _enqueue_ensure_index(session, model)
         await _commit(session, model)
@@ -348,6 +363,7 @@ async def update_model(
             model.api_key_hint = make_key_hint(api_key) if api_key else None
         if tested:
             model.last_test_at, model.last_test_ok = datetime.now(UTC), True
+        await _flush(session)  # 先落库改名，唯一冲突在此映射（clear_default 的查询会触发 autoflush）
         if want_default and not model.is_default:
             await model_repo.clear_default(session, model.model_type, except_id=model.id, operator_id=ctx.user_id)
         model.is_default = want_default

@@ -38,7 +38,7 @@ export default function ReprocessModal({ dataset, doc, onClose, onSuccess }: Pro
     ? { ...fromProcessRule(detail.process_rule, mode), mode }
     : dataset.last_process_rule
       ? { ...fromProcessRule(dataset.last_process_rule, mode), mode }
-      : defaultRule(mode);
+      : defaultRule(mode, maxInput);
   const value = edited ?? initial;
   const errors = validateRule(value, maxInput);
   const invalid = Object.keys(errors).length > 0;

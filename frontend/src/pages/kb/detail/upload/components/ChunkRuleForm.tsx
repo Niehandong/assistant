@@ -228,7 +228,7 @@ export default function ChunkRuleForm({
           )}
           <Button
             disabled={disabled}
-            onClick={() => onChange(defaultRule(lockedMode ?? value.mode))}
+            onClick={() => onChange(defaultRule(lockedMode ?? value.mode, maxInputTokens))}
           >
             恢复默认
           </Button>

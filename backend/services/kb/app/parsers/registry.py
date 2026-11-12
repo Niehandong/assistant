@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import multiprocessing
+import os
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -19,6 +20,7 @@ from app.parsers.errors import (
 from app.parsers.excel import open_xls, parse_xls, parse_xlsx
 from app.parsers.html import parse_html
 from app.parsers.ooxml import check_ooxml, parse_docx, parse_pptx
+from app.parsers.orphan_guard import init_worker_process
 from app.parsers.pdf import open_pdf, parse_pdf
 from app.parsers.text import parse_csv, parse_plain, read_text
 
@@ -97,7 +99,12 @@ _pool: ProcessPoolExecutor | None = None
 def get_pool(max_workers: int = 2) -> ProcessPoolExecutor:
     global _pool
     if _pool is None:
-        _pool = ProcessPoolExecutor(max_workers=max_workers, mp_context=multiprocessing.get_context("spawn"))
+        _pool = ProcessPoolExecutor(
+            max_workers=max_workers,
+            mp_context=multiprocessing.get_context("spawn"),
+            initializer=init_worker_process,
+            initargs=(os.getpid(),),  # 父进程被强杀时子进程自行退出，见 orphan_guard
+        )
     return _pool
 
 

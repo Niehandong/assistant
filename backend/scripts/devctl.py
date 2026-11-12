@@ -169,8 +169,13 @@ def cmd_migrate(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------- up
-def pid_file(name: str) -> Path:
-    return RUN_DIR / f"{name}.pid"
+def run_dir(env_name: str | None = None) -> Path:
+    """pid 文件目录：dev 为 ``.run/``，test 为 ``.run/test/``（两套环境互不干扰）。"""
+    return RUN_DIR / env_name if env_name else RUN_DIR
+
+
+def pid_file(name: str, env_name: str | None = None) -> Path:
+    return run_dir(env_name) / f"{name}.pid"
 
 
 def is_alive(pid: int) -> bool:
@@ -183,22 +188,45 @@ def is_alive(pid: int) -> bool:
     return True
 
 
-def read_pid(name: str) -> int | None:
-    path = pid_file(name)
+def is_our_process(pid: int, svc: Service, proc_root: Path = Path("/proc")) -> bool:
+    """身份校验：cwd 位于本仓库 ``backend/services/<目录>`` 下，且 cmdline 含该服务入口脚本。
+
+    PID 会回绕，仅凭"存活"不足以证明该进程是本项目启动的服务。
+    """
+    try:
+        cwd = Path(os.readlink(proc_root / str(pid) / "cwd")).resolve()
+        cmdline = (proc_root / str(pid) / "cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return False
+    expected = (SERVICES_DIR / svc.directory).resolve()
+    if cwd != expected and expected not in cwd.parents:
+        return False
+    return svc.entry.encode() in cmdline
+
+
+def read_pid(name: str, env_name: str | None = None) -> int | None:
+    path = pid_file(name, env_name)
     if not path.is_file():
         return None
     try:
         pid = int(path.read_text().strip())
     except ValueError:
+        path.unlink(missing_ok=True)
         return None
-    return pid if is_alive(pid) else None
+    if not is_alive(pid):
+        return None
+    if not is_our_process(pid, SERVICES[name]):
+        print(f"[{name}] pid 文件 {path} 中的 PID {pid} 不是本项目的该服务进程（陈旧 pid 文件），已删除，未终止进程")
+        path.unlink(missing_ok=True)
+        return None
+    return pid
 
 
-def start_detached(svc: Service, env: dict[str, str]) -> None:
-    if (pid := read_pid(svc.name)) is not None:
+def start_detached(svc: Service, env: dict[str, str], env_name: str | None = None) -> None:
+    if (pid := read_pid(svc.name, env_name)) is not None:
         print(f"[{svc.name}] 已在运行 (pid={pid})，跳过")
         return
-    RUN_DIR.mkdir(exist_ok=True)
+    run_dir(env_name).mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(exist_ok=True)
     with open(LOG_DIR / f"{svc.name}.log", "ab") as log:
         proc = subprocess.Popen(
@@ -210,7 +238,7 @@ def start_detached(svc: Service, env: dict[str, str]) -> None:
             stdin=subprocess.DEVNULL,
             start_new_session=True,
         )
-    pid_file(svc.name).write_text(str(proc.pid))
+    pid_file(svc.name, env_name).write_text(str(proc.pid))
     print(f"[{svc.name}] 已后台启动 pid={proc.pid} 日志={LOG_DIR / (svc.name + '.log')}")
 
 
@@ -271,7 +299,7 @@ def cmd_up(args: argparse.Namespace) -> int:
     env = child_env(args.env)
     if args.detach:
         for svc in services:
-            start_detached(svc, env)
+            start_detached(svc, env, args.env)
         return 0
     return asyncio.run(run_foreground(services, env))
 
@@ -292,14 +320,14 @@ def terminate(pid: int, timeout: float = 10.0) -> None:
 def cmd_down(args: argparse.Namespace) -> int:
     for svc in select_services(args.svc) if args.svc else list(SERVICES.values()):
         pids: list[int] = []
-        if (pid := read_pid(svc.name)) is not None:
+        if (pid := read_pid(svc.name, args.env)) is not None:
             pids = [pid]
         if not pids:
             print(f"[{svc.name}] 未运行")
         for pid in pids:
             print(f"[{svc.name}] 停止 pid={pid}")
             terminate(pid)
-        pid_file(svc.name).unlink(missing_ok=True)
+        pid_file(svc.name, args.env).unlink(missing_ok=True)
     return 0
 
 
@@ -314,10 +342,10 @@ def healthz(port: int) -> str:
         return "不可达"
 
 
-def cmd_status(_: argparse.Namespace) -> int:
+def cmd_status(args: argparse.Namespace) -> int:
     print(f"{'服务':<10}{'状态':<8}{'PID':<9}{'端口':<7}healthz")
     for svc in SERVICES.values():
-        pid = read_pid(svc.name)
+        pid = read_pid(svc.name, args.env)
         state = "运行中" if pid else ("未启动" if svc_exists(svc) else "未实现")
         port = str(svc.port) if svc.port else "-"
         health = healthz(svc.port) if (svc.port and pid) else "-"

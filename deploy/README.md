@@ -101,11 +101,13 @@ GRANT USAGE ON SCHEMA public TO kbp_iam, kbp_kb, kbp_open;
 - [ ] `MODEL_SECRET_KEY`（Fernet）、`API_KEY_PEPPER`（一经设置不可更换，请备份）、数据库 / Redis / MinIO 密码均已替换，且 `.env.prod` 权限为 600、不进 git
 - [ ] JWT 私钥只挂载到 iam；其余服务只有公钥；密钥文件权限正确
 - [ ] `TRUSTED_PROXIES` 只含 nginx 容器地址（`NGINX_IP/32`），不含 `127.0.0.1`、`0.0.0.0/0`、宿主机网段
+  - 三个服务的 `main.py` 以 `uvicorn.run(..., proxy_headers=False)` 启动（镜像 `CMD ["python", "main.py"]`），不使用 uvicorn 自带的 `X-Forwarded-For` 改写（其默认信任 127.0.0.1，直连时可被伪造）；客户端 IP 统一只由应用层按 `TRUSTED_PROXIES` 解析。请勿在编排中改用 `uvicorn --proxy-headers` / `FORWARDED_ALLOW_IPS`。
 - [ ] `SEED_ADMIN_PASSWORD` 已改为强密码，首次登录已改密（admin 的 `must_change_password` 由 seed 置为 true）
 - [ ] 除 nginx 外没有端口映射；`/internal/` 经 nginx 访问返回 404
 - [ ] PostgreSQL `PG_*` 参数与主机内存匹配；`shm_size` 足够
 - [ ] `kb` schema 下表的 owner 为 `kbp_kb`
 - [ ] 备份：`pgdata`、`miniodata`（含上传文件）、`redisdata`（Redis Streams 未消费消息）；`API_KEY_PEPPER` 与 JWT 密钥单独备份
+- [ ] 数据库与对象存储必须**成对**备份/恢复：kb 的解析文本对象键 `parsed/{upload_file_id}.txt` 只含自增 ID，若只重建/回滚数据库而保留旧桶，新文档可能复用旧解析文本；重建数据库时须同时清空 `kbp-files` 桶
 - [ ] 前面有负载均衡 / HTTPS 终结时：见下节
 
 ## 前置负载均衡 / HTTPS

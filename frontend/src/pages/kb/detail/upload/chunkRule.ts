@@ -24,9 +24,21 @@ export const DEFAULT_RULE: RuleFormValue = {
   child: { separator: '\\n', max_tokens: 512 },
 };
 
-/** 恢复默认：保持当前（可能被锁定的）分段方式 */
-export function defaultRule(mode: ChunkMode = 'general'): RuleFormValue {
-  return structuredClone({ ...DEFAULT_RULE, mode });
+/**
+ * 默认规则：保持当前（可能被锁定的）分段方式。
+ * maxInputTokens 已知时，通用分段最大长度与子块最大长度默认取 min(默认值, 模型上限)，
+ * 避免默认值直接超过模型单次最大输入；父块不受 embedding 上限约束，保持不变。
+ */
+export function defaultRule(
+  mode: ChunkMode = 'general',
+  maxInputTokens?: number | null,
+): RuleFormValue {
+  const rule = structuredClone({ ...DEFAULT_RULE, mode });
+  if (typeof maxInputTokens === 'number' && maxInputTokens > 0) {
+    rule.general.max_tokens = Math.min(DEFAULT_RULE.general.max_tokens ?? 1024, maxInputTokens);
+    rule.child.max_tokens = Math.min(DEFAULT_RULE.child.max_tokens ?? 512, maxInputTokens);
+  }
+  return rule;
 }
 
 export const SEPARATOR_MAX_LEN = 10;
