@@ -520,6 +520,7 @@ cd frontend && pnpm dev                                # http://localhost:5174
 | GET /api/v1/kb/admin/datasets | kb:admin:list | 过滤 |
 | GET /api/v1/kb/admin/datasets/{id} | kb:admin:view | 过滤 |
 | GET /api/v1/kb/admin/datasets/{id}/documents | kb:admin:view | 过滤 |
+| GET /api/v1/kb/admin/datasets/{id}/documents/{document_id} | kb:admin:view | 过滤 |
 | GET /api/v1/kb/admin/datasets/{id}/documents/{document_id}/segments | kb:admin:view | 过滤 |
 | POST /api/v1/kb/admin/datasets/{id}/transfer | kb:admin:transfer | 过滤（知识库与接收人） |
 | POST /api/v1/kb/admin/datasets/batch-transfer | kb:admin:transfer | 过滤 |
@@ -547,6 +548,7 @@ cd frontend && pnpm dev                                # http://localhost:5174
 | PUT /api/v1/open-platform/audit/api-keys/{id}/disable | openapi:apikey:audit | 过滤 |
 | DELETE /api/v1/open-platform/audit/api-keys/{id} | openapi:apikey:audit | 过滤 |
 | GET /api/v1/open-platform/audit/call-logs | openapi:apikey:audit | 过滤（无法识别密钥的记录仅 ALL） |
+| GET /api/v1/open-platform/audit/capabilities | openapi:apikey:audit | 不过滤（仅返回当前用户能力标记 `can_view_unknown_calls`） |
 | POST /api/v1/open/datasets/{dataset_id}/retrieve | public（API 密钥鉴权，外部系统不登录） | 按密钥创建人资源 ACL |
 | GET /internal/v1/stats/api-keys | internal | — |
 
@@ -679,7 +681,8 @@ FE-01 前端骨架 ──► FE-02 请求/权限基础 ──► FE-03 登录 / 
 
 | 风险 | 影响 | 应对 |
 |---|---|---|
-| 精确向量检索在大库（接近 10 万分段）+ 高并发时延迟超标 | F-18 P95 1.5s | M2 BE-21 含 10 万分段压测；`halfvec` 降低 IO；不达标时启用"按 Embedding 模型建 HNSW 部分索引 + iterative scan"（运行时 DDL，需在规范中登记为例外）或切换 Qdrant（`VectorStore` 抽象已预留） |
+| 大库检索延迟（BE-21 实测通用 10 万分段 P95 向量 674 / 全文 1043 / 混合 1418ms） | F-16/F-18 | 已决定按 M2 3.10 优化（BE-21b）：大库走按模型 HNSW 部分索引、小库精确；PG 参数调优；全文按常见词裁剪候选；混合并行。HNSW 召回率以门槛约束；仍不达标再评估 Qdrant（`VectorStore` 抽象已预留） |
+| 满量级（500 万单元）时 HNSW 索引约 12GB 需常驻内存 | 检索延迟 | DB 主机内存建议 ≥ 64GB；本期规模 16GB 足够（M2 3.10.3） |
 | jieba 分词与用户期望不一致（专有名词） | 全文检索召回 | 支持加载自定义词典（配置项 `JIEBA_USER_DICT`）；人工关键词加权 |
 | token 计数用 `cl100k_base` 估算，与具体 Embedding 模型的分词器不同 | 分段长度与模型实际上限有偏差 | 按 PRD 以模型 `max_input_tokens` 为上限校验；模型服务因超长报错时，失败原因为"向量模型调用失败"并附模型返回信息，用户调小分段长度后重试 |
 | Rerank 无 OpenAI 官方协议 | 兼容性 | 采用业界通用的 Jina/Cohere 兼容 `/rerank` 格式（Xinference、vLLM、TEI 适配层、硅基流动等均支持），见 M2 |
@@ -714,6 +717,8 @@ FE-01 前端骨架 ──► FE-02 请求/权限基础 ──► FE-03 登录 / 
 | 2026-11-11 | 新增 TQ-06（管辖根组织保护）、TQ-07（集团下可建部门），均已按推荐写入 M1 契约；共享库 `data_scope_filter` 类型放宽、新增可注入 context loader（向后兼容） | M1 联调反馈 | BE-03、BE-07、FE-05；M2/M3 无需改动 |
 | 2026-11-11 | 对照 PRD v0.3 校准：3.6 数据范围表补充集团本部口径；TQ-06/TQ-07 已确认；M1 新增 5.2.0 保护规则与 403103 | 用户确认、PRD v0.3 | BE-07、FE-05 |
 | 2026-11-11 | 3.6 写明多角色数据范围取全部启用角色并集、与权限码来源无关；新增 SELF 在 iam 管理页的只读特例说明；`data_scope_filter` 签名与 M1 同步（允许可空列） | M1 第 1 轮测试后用户确认 | BE-07、BE-08（SELF 特例）、FE-05、FE-06 |
+| 2026-11-12 | 检索性能：M2 新增 3.10 / BE-21b（HNSW 运行时索引、PG 参数、全文裁剪、混合并行）；风险表更新；13.10 登记"运行时建向量索引"规范例外；D3 结论更新为"pgvector：小库精确 + 大库 HNSW" | BE-21 压测不达标，用户决定 A+C+D | BE-21b、BE-29 |
+| 2026-11-12 | 6.3 新增 `GET /api/v1/open-platform/audit/capabilities`（无法识别密钥开关的能力标记，不改 `/auth/me`）；M3 新增错误码 403605（admin_disabled 密钥不可编辑/重新生成）；详见 M3 第 12 节 | FE-18/20/21 契约澄清 | BE-25、BE-26、BE-27、FE-18、FE-20、FE-21 |
 
 ---
 
@@ -900,6 +905,12 @@ backend/tests_e2e_api/
 .run/
 ```
 
+### 13.10 规范例外登记（2026-11-12 新增，需主会话在用户确认后写入 CLAUDE.md 4.4）
+
+```markdown
+- 例外：kb 的向量 HNSW 索引（`kb.ix_seg_hnsw_m{模型ID}`、`kb.ix_child_hnsw_m{模型ID}`）依赖运行时的模型 ID 与维度，由 kb-worker 以 `CREATE INDEX CONCURRENTLY` 在运行时创建、对账与删除，不走 Alembic。除此之外的任何表结构/索引变更仍必须走 Alembic 迁移。
+```
+
 ### 13.9 智能体提示词调整
 
 **`.claude/agents/backend-dev.md`**
@@ -947,7 +958,7 @@ backend/tests_e2e_api/
 |---|---|---|---|---|
 | D1 | 服务拆分粒度 | **iam / kb（API）/ kb-worker / open 四个进程，chat 二期**；kb 管理与检索同代码、可分组部署 | A. 检索拆成独立 retrieval 服务；B. 先做模块化单体，后拆 | A 会造成检索服务跨 schema 读 kb 数据或双写；B 不满足用户"分开部署"的明确诉求。推荐方案独立扩容能力已足够 |
 | D2 | 数据库隔离 | **一实例一库、每服务一个 schema**，禁止跨 schema 访问 | 每服务一库 | 运维最简，将来拆库只改 DSN |
-| D3 | 向量库 | **pgvector + 按库精确检索**，`VectorStore` 抽象 | Qdrant（多一个中间件，需双写同步） | 规模内满足且强一致；大库性能在 M2 压测验证 |
+| D3 | 向量库 | **pgvector：小库精确检索 + 大库按模型 HNSW 部分索引**（2026-11-12 依 BE-21 压测调整），`VectorStore` 抽象 | Qdrant（多一个中间件，需双写同步） | 规模内满足且强一致；大库性能在 M2 压测验证 |
 | D4 | 全文检索 | **PG tsvector + jieba** | Elasticsearch + IK | 少一套 JVM 中间件与数据同步 |
 | D5 | 任务队列 / 事件 | **Redis Streams（自封装消费组）** | arq / Celery / RabbitMQ | 无新中间件、无新依赖，任务状态以 PG 为准 |
 | D6 | 文件存储 | **MinIO（S3 协议）** | 本地磁盘 + NFS | 多节点共享，生产可换云 OSS |
@@ -966,6 +977,6 @@ backend/tests_e2e_api/
 | TQ-02 | 组织"类型"能否修改（PRD 只说子公司管理员不能改本公司节点类型） | 组织类型创建后不可修改（改类型会连锁改变下级的所属公司和数据归属） | F-02 |
 | TQ-03 | 角色编码、类型、所属公司能否修改 | 创建后不可修改；名称、状态、备注、权限、数据范围可改 | F-04 |
 | TQ-04 | 无法识别密钥的失败调用可能被恶意刷量，日志膨胀 | 按来源 IP 对"无效密钥"日志做采样：同一 IP 每分钟最多记 20 条，超出只计数到运行日志 | F-19、AC-58 |
-| TQ-05 | 管理视图"每次进入查看内容都记操作日志"：进入详情页记 1 条；翻页、打开分段列表是否每次都记 | 进入知识库审计详情记 1 条，打开某文档的分段列表再记 1 条（含文档名），翻页不记 | F-20、AC-67 |
+| TQ-05 | 管理视图"每次进入查看内容都记操作日志"：进入详情页记 1 条；翻页、打开分段列表是否每次都记 | 进入知识库审计详情记 1 条，打开某文档的分段列表再记 1 条（含文档名），翻页不记；实现见 M2 5.8.1（`audit_entry` + 30 分钟去重兜底） | F-20、AC-67 |
 | TQ-06（已确认，PRD v0.3 A-31） | 子公司管理员能否停用/删除自己管辖的根组织（本公司节点）？PRD 只限制了"不能改本公司节点的上级和类型" | 不能：非超管、非 ALL 范围的管理员不能停用/删除其管辖根节点；任何人不能停用本人所在组织（含上级），需由上级管理员操作 | F-02、AC-08 |
 | TQ-07（已确认，PRD v0.3 A-30） | 集团节点下能否直接建部门？PRD F-02 规则 2 写"部门的上级可以是公司或部门"，但 F-10 规则 5 提到"集团下的部门"（集团本部） | 可以：集团节点视同"集团本部公司"，可直接下设部门 | F-02、F-10 |

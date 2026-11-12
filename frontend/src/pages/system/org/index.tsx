@@ -31,8 +31,6 @@ export default function OrgPage() {
   const [formState, setFormState] = useState<FormState>(null);
   const [moving, setMoving] = useState<OrgNode | null>(null);
   const [expandedKeys, setExpandedKeys] = useState<number[]>([]);
-  // 当前可见的全部节点 id：上级不可见的节点（如子公司管理员的本公司节点）不能调整上级（403101）
-  const [visibleIds, setVisibleIds] = useState<Set<number>>(new Set());
 
   const reload = () => {
     void queryClient.invalidateQueries({ queryKey: [ORG_OPTIONS_KEY] });
@@ -176,7 +174,6 @@ export default function OrgPage() {
       render: (_, r) => {
         // 只读节点（5.2.0a，如 SELF 的本人组织链）不显示任何管理操作
         if (!isManageable(r)) return <span style={{ color: '#999' }}>只读</span>;
-        const isGroup = r.org_type === 'group';
         return (
           <Space size={0} wrap>
             <Access code="system:org:create">
@@ -196,11 +193,7 @@ export default function OrgPage() {
               >
                 编辑
               </Button>
-              {!isGroup && visibleIds.has(r.parent_id) && (
-                <Button type="link" size="small" onClick={() => setMoving(r)}>
-                  移动
-                </Button>
-              )}
+              {renderGuarded('移动', getBlockedReason(r, 'move'), () => setMoving(r))}
               {renderGuarded(
                 r.status === 'enabled' ? '停用' : '启用',
                 getBlockedReason(r, 'disable'),
@@ -239,7 +232,6 @@ export default function OrgPage() {
           const data = pruneEmptyChildren(tree);
           const ids = collectAllIds(data);
           setExpandedKeys(ids);
-          setVisibleIds(new Set(ids));
           return { data, success: true };
         })}
         toolBarRender={() => [

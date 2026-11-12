@@ -32,7 +32,6 @@ COMPANY_UNDER_DEPT = (400110, "部门下不能创建公司")
 COMPANY_PARENT_INVALID = (400111, "公司的上级只能是集团或公司")
 MOVE_INTO_SELF = (400112, "不能移动到自身或下级组织之下")
 GROUP_PROTECTED = org_protection.GROUP_PROTECTED
-MOVE_OWN_COMPANY_FORBIDDEN = (403101, "不能调整本公司节点的上级")
 NAME_EXISTS = (409101, "同一上级下已存在同名组织")
 CODE_EXISTS = (409102, "组织编码已存在")
 HAS_CHILDREN = (409103, "存在下级组织，不能删除")
@@ -162,6 +161,13 @@ async def _to_nodes(
     eff = await _effective_statuses(session, orgs)
     leaders = await _leader_names(session, orgs)
     manageable = {o.id: (scope.org_manageable(ctx, o) if ctx else True) for o in orgs}
+    parent_ok: dict[int, bool] = {}
+    if protection and ctx:
+        known = {o.id: o for o in orgs}
+        parents = await org_repo.get_by_ids(session, {o.parent_id for o in orgs} - known.keys())
+        for o in orgs:
+            p = known.get(o.parent_id) or parents.get(o.parent_id)
+            parent_ok[o.id] = p is not None and not p.is_deleted and scope.org_manageable(ctx, p)
     return {
         o.id: OrgNode(
             id=o.id,
@@ -179,6 +185,9 @@ async def _to_nodes(
             manageable=manageable.get(o.id, True),
             disable_blocked_reason=protection.disable_blocked_reason(o) if protection and manageable[o.id] else None,
             delete_blocked_reason=protection.delete_blocked_reason(o) if protection and manageable[o.id] else None,
+            move_blocked_reason=(
+                protection.move_blocked_reason(o, parent_ok[o.id]) if protection and manageable[o.id] else None
+            ),
             created_at=o.created_at,
             children=[],
         )
@@ -320,14 +329,11 @@ async def move_org(session: AsyncSession, ctx: AuthContext, request: Request, or
     async with oplog_scope(request, ctx, module="org", action="move", target_type="org", target_id=org_id) as h:
         org = await _get_visible(session, ctx, org_id, for_update=True)
         h.set_target(org.id, org.name)
-        if org.org_type == OrgType.GROUP:
-            raise BizError(*GROUP_PROTECTED)
-        _ensure_version(org, body.version)
-
-        # 节点当前上级也须在范围内（子公司管理员不能调整本公司节点的上级）
+        # 移动保护 M1~M3（5.2.0），先于目标上级相关校验；与组织树 move_blocked_reason 同源
         current_parent = await org_repo.get_active(session, org.parent_id)
-        if current_parent is None or not scope.org_manageable(ctx, current_parent):
-            raise BizError(*MOVE_OWN_COMPANY_FORBIDDEN)
+        parent_ok = current_parent is not None and scope.org_manageable(ctx, current_parent)
+        (await org_protection.compute(session, ctx)).check_move(org, parent_ok)
+        _ensure_version(org, body.version)
         new_parent = await _get_visible(session, ctx, body.parent_id)
         if new_parent.id == org.id or f",{org.id}," in f",{new_parent.ancestors},":
             raise BizError(*MOVE_INTO_SELF)

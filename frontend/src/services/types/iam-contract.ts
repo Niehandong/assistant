@@ -90,6 +90,8 @@ export interface OrgNode {
   disable_blocked_reason?: string | null;
   /** 仅组织管理树（5.2.1）返回：非 null 时“删除”不可用，值为提示文案（403102/400114） */
   delete_blocked_reason?: string | null;
+  /** 仅组织管理树（5.2.1）返回：非 null 时“移动”不可用，值为提示文案（400114/403101/403104） */
+  move_blocked_reason?: string | null;
   children: OrgNode[];
 }
 

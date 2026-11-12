@@ -4,6 +4,35 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     container_name: kbp-postgres
+    # 检索性能参数（tech-design-m2 3.10.3 本地列；与其他项目共用 15GB 机器，取值偏保守）。
+    # shm_size：并行查询与 HNSW 并行构建使用 /dev/shm，docker 默认 64MB 不够。生产参数见 deploy/prod/postgres-params.example.conf
+    shm_size: 2gb
+    command:
+      - postgres
+      - -c
+      - shared_buffers=1GB
+      - -c
+      - effective_cache_size=4GB
+      - -c
+      - work_mem=32MB
+      - -c
+      - maintenance_work_mem=1GB
+      - -c
+      - max_worker_processes=16
+      - -c
+      - max_parallel_workers=8
+      - -c
+      - max_parallel_workers_per_gather=4
+      - -c
+      - max_parallel_maintenance_workers=4
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - jit=off
+      - -c
+      - max_connections=200
     environment:
       POSTGRES_USER: kbp
       POSTGRES_PASSWORD: kbp

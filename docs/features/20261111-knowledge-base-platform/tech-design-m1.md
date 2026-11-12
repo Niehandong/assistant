@@ -484,12 +484,12 @@ Redis key 规范（`auth/cache_keys.py`）：
 {"id": 5, "parent_id": 3, "name": "研发部", "code": "A-RD", "org_type": "dept",
  "leader_user_id": 21, "leader_name": "李四", "sort_order": 1, "status": "enabled",
  "effective_status": "enabled", "company_id": 3, "version": 2,
- "disable_blocked_reason": null, "delete_blocked_reason": null,
+ "disable_blocked_reason": null, "delete_blocked_reason": null, "move_blocked_reason": null,
  "created_at": "2026-11-11T10:00:00+08:00", "children": []}
 ```
 `effective_status`：自身或任一祖先停用则为 `disabled`。
 
-`disable_blocked_reason` / `delete_blocked_reason`（仅 5.2.1 组织管理树返回；其他接口可省略）：服务端按 5.2.0 的**保护规则**为当前操作人逐节点计算，`null` 表示不受保护（是否最终成功仍以请求时校验为准，例如删除时的下级/用户/知识库/角色引用检查不在此预判）；非 `null` 时为提示文案（即对应错误码的 message），前端据此把"停用""删除"按钮**置灰并悬停显示该文案**，不得隐藏。节点已停用时 `disable_blocked_reason` 恒为 `null`（启用不受保护）。
+`disable_blocked_reason` / `delete_blocked_reason` / `move_blocked_reason`（仅 5.2.1 组织管理树返回；其他接口可省略）：服务端按 5.2.0 的**保护规则**为当前操作人逐节点计算，`null` 表示不受保护（是否最终成功仍以请求时校验为准，例如删除时的下级/用户/知识库/角色引用检查不在此预判）；非 `null` 时为提示文案（即对应错误码的 message），前端据此把"停用""删除""移动"按钮**置灰并悬停显示该文案**，不得隐藏。`move_blocked_reason` 只预判与**目标上级无关**的拒绝（下表 M1~M3）；与目标上级有关的校验（新上级可管理、非自身/后代、层级约束、同名）仍在选择目标时由前端置灰候选、请求时由后端校验。节点已停用时 `disable_blocked_reason` 恒为 `null`（启用不受保护）。
 
 #### 5.2.0 组织保护规则（停用 / 删除）
 
@@ -518,6 +518,16 @@ Redis key 规范（`auth/cache_keys.py`）：
 - 顺序 2 先于 3：例如 A 公司管理员停用 A 公司节点（既是管辖根又是本人上级）返回 403102（与 AC-74 文案一致）。
 - 删除本人所在组织链上的节点不在此拦截，由 409103/409104（存在下级/用户）兜底。
 - 启用（`status=enabled`）不受保护规则限制。
+- **移动保护规则**（与停用/删除同一函数 `org_protection.compute(op)` 计算，`PUT .../move` 校验顺序与此一致，先于目标上级相关校验）：
+
+  | 顺序 | 条件 | 错误码 / 提示 |
+  |---|---|---|
+  | M1 | 目标为集团节点 | 400114 集团节点不能移动、停用或删除 |
+  | M2 | 目标 ∈ R(op)（管辖根，非超管/非 ALL）且其当前上级不在管理范围内 | **403101** 不能调整自己管辖范围根组织的上级，请联系上级管理员 |
+  | M3 | 目标当前上级不在管理范围内（上级不可见，或仅因 5.2.0a SELF 特例只读可见） | **403104** 当前上级组织不在您的管理范围内，不能移动该组织 |
+
+  - 例：子公司管理员移动本公司节点 → 403101；SELF 用户移动自己创建、但上级为本人组织链只读节点的部门 → 403104（BUG-13 场景）。
+  - 超管与 ALL 范围操作人：除集团节点外不会命中 M2/M3。
 - 与 AC-74 对照：M（COMPANY_AND_CHILD，A 公司研发部）停用/删除 A 公司 → 403102；停用研发部 → 403103；停用测试部 → 成功；G（ALL，集团财务部）停用 A 公司 → 成功、停用集团财务部 → 403103；S0（集团节点）停用集团节点 → 400114。
 
 #### 5.2.0a SELF 数据范围的只读特例（仅 iam 用户与组织）
@@ -575,10 +585,10 @@ Redis key 规范（`auth/cache_keys.py`）：
 #### 5.2.6 `PUT /api/v1/system/orgs/{id}/move` — 调整上级
 - 权限码 `system:org:update`
 - body：`parent_id`(必填)、`version`(必填)
-- 校验：节点、**节点当前上级**、新上级都须在范围内（子公司管理员的本公司节点其上级不在范围内 → 403101）；不能是集团节点（400114）；新上级不能是自身或后代（400112）；层级规则同新增（400110/400111）；新上级下同名 → 409101。
+- 校验：节点、**节点当前上级**、新上级都须在范围内（不满足时按 5.2.0 移动保护规则返回 400114 / 403101 / 403104）；新上级不能是自身或后代（400112）；层级规则同新增（400110/400111）；新上级下同名 → 409101。
 - 新上级等于当前上级：视为 no-op，校验 version 后直接返回当前 `OrgNode`，不写日志、不发事件、不 bump epoch。
 - 处理（单事务）：更新自身 parent_id/ancestors；批量更新所有后代 ancestors；重算自身与后代的 `company_id`；重算这些组织下用户的 `company_id`；提交后 `INCR authz:epoch`，对每个受影响的组织和用户发布 `org.upserted`/`user.upserted`。
-- 错误码：403101 不能调整本公司节点的上级；400112；400114 集团节点不能移动、停用或删除。
+- 错误码：400114、403101、403104（见 5.2.0 移动保护规则）；400112；400110/400111；409101。
 
 #### 5.2.7 `PUT /api/v1/system/orgs/{id}/status`
 - 权限码 `system:org:update`；body：`status`、`version`。集团节点 → 400114。
@@ -816,7 +826,7 @@ Redis key 规范（`auth/cache_keys.py`）：
 | 编辑/状态/移动等 | `{"before": {...}, "after": {...}}`，只含变化的关键字段 |
 | 授权（role/grant） | `{"permissions": {"added": [...], "removed": [...]}, "data_scope": {"before": ..., "after": ...}, "custom_orgs": {"added": [...], "removed": [...]}}` |
 | 分配角色（user/assign_role） | `{"before": [角色名], "after": [角色名]}` |
-| 审计查看（dataset/admin_view） | `{"document_name": "..."}`（进入知识库详情时为 `{}`） |
+| 审计查看（dataset/admin_view） | `{"document_id": 101, "document_name": "..."}`（进入知识库详情时为 `{}`；记录规则见 M2 5.8.1） |
 前端遇到未知结构时以 JSON 展示。
 
 ### 5.9 iam 专属错误码汇总
@@ -837,9 +847,10 @@ Redis key 规范（`auth/cache_keys.py`）：
 | 400120 | 用户只能归属集团、公司或部门节点 |
 | 400121 | 自定义数据范围必须至少选择一个组织 |
 | 400122 | 公司级角色必须指定所属公司 |
-| 403101 | 不能调整本公司节点的上级 |
+| 403101 | 不能调整自己管辖范围根组织的上级，请联系上级管理员 |
 | 403102 | 不能停用/删除自己管辖范围的根组织，请联系上级管理员 |
 | 403103 | 不能停用本人所在的组织及其上级组织 |
+| 403104 | 当前上级组织不在您的管理范围内，不能移动该组织 |
 | 403111 | 不能停用或删除自己 |
 | 403112 | 不能停用或删除内置管理员账号 |
 | 403121 | 所选角色超出您的授权范围 |
@@ -927,7 +938,7 @@ Redis key 规范（`auth/cache_keys.py`）：
 - 内容：5.2 全部接口；移动时子树 ancestors/company_id、用户 company_id 批量重算（单事务）；停用时吊销子树用户会话；操作日志；事件发布。
 - **约束**：所有对 `sys_org`、`sys_user` 的批量 `UPDATE`（`update()` 语句、bulk 更新，不经 ORM 实例的 onupdate）**必须显式设置 `updated_at = now()`（及 `updated_by`）**，否则 sync 游标与对账会漏行、只读副本不更新；单测需断言移动后子树组织与受影响用户的 `updated_at` 均已变化。
 - SELF 只读特例：按 5.2.0a 区分 `visible_filter`/`manage_filter`，输出 `manageable`；只读节点写请求 → 403001。
-- 保护规则：实现 5.2.0（`org_protection.compute(op)` 同时供 5.2.1 计算 `disable_blocked_reason`/`delete_blocked_reason` 与 5.2.7/5.2.8 校验，保证一致）。
+- 保护规则：实现 5.2.0（`org_protection.compute(op)` 同时供 5.2.1 计算 `disable_blocked_reason`/`delete_blocked_reason`/`move_blocked_reason` 与 5.2.6/5.2.7/5.2.8 校验，保证一致；补 BUG-13 回归单测）。
 - 完成标准：AC-07~AC-09、**AC-74** 单测（含 CUSTOM 多勾选节点的管辖根、多角色并集、超管/ALL 不受管辖根限制但受本人组织链限制）；子公司管理员越权（B 公司节点 → 404000、移动本公司 → 403101）；并发编辑 version 冲突 409001。
 
 ### BE-08（iam）用户管理 — F-03
@@ -979,7 +990,7 @@ Redis key 规范（`auth/cache_keys.py`）：
 - 权限码：`system:org:list`、`system:org:create|update|delete`
 - 内容：树形 ProTable（名称、类型、编码、负责人、显示顺序、状态（生效状态为停用时标注"上级已停用"）、操作：新增下级/编辑/移动/停用启用/删除）；新增时根据上级类型限制可选类型（集团下可选公司、部门；公司下可选公司、部门；部门下只可选部门）；编码编辑时只读；删除二次确认；409 错误展示后端 message。
 - `manageable=false` 的节点（SELF 特例中的本人组织链）不显示任何管理操作；`OrgTreeSelect` 作为写入目标选择时禁用 `manageable=false` 节点。
-- 保护规则展示：**直接使用 5.2.1 返回的 `disable_blocked_reason`、`delete_blocked_reason`**，非 null 时"停用"/"删除"按钮置灰（不隐藏）并用 Tooltip 显示该文案；前端**不自行推算**管辖根（AuthContext 未下发角色明细）。组织变更后刷新树以更新标记；请求仍返回 403102/403103 时展示后端 message。
+- 保护规则展示：**直接使用 5.2.1 返回的 `disable_blocked_reason`、`delete_blocked_reason`、`move_blocked_reason`**，非 null 时"停用"/"删除"/"移动"按钮置灰（不隐藏）并用 Tooltip 显示该文案；前端**不自行推算**管辖根（AuthContext 未下发角色明细）。组织变更后刷新树以更新标记；请求仍返回 403101/403102/403103/403104 时展示后端 message。
 - 完成标准：AC-07~AC-09、AC-74 前端行为。
 
 ### FE-06 用户管理页 — F-03
@@ -1058,6 +1069,7 @@ Redis key 规范（`auth/cache_keys.py`）：
 | 2026-11-11 | 4.2 写明账号区分大小写、唯一约束按原值 | 用户确认保持现状 | 无（澄清） |
 | 2026-11-11 | 新增 5.2.0a SELF 只读特例：iam 查询用 `visible_filter`（OR 本人账号/本人组织链），写接口用 `manage_filter`；可见不可管理的写请求返回 403001；OrgNode、组织选择器节点、UserItem 增加 `manageable` | M1 第 1 轮测试后用户确认 | BE-07、BE-08、BE-09（assignable/CUSTOM 校验用管理范围）、FE-05、FE-06、FE-07（选择器不可选） |
 | 2026-11-11 | 3.2 `BaseServiceSettings.validate_for_runtime()`：非 dev/test 环境 `INTERNAL_API_TOKEN` 为默认值或过短拒绝启动；`TRUSTED_PROXIES` 生产只填 Nginx 地址 | 测试提出的部署安全建议，用户确认 | BE-02（共享库）、BE-29 |
+| 2026-11-11 | BUG-13：OrgNode 增加 `move_blocked_reason`（5.2.0 新增移动保护规则 M1~M3，与停用/删除同一函数计算）；403101 文案改为"不能调整自己管辖范围根组织的上级，请联系上级管理员"；新增 403104"当前上级组织不在您的管理范围内，不能移动该组织"；拒绝规则本身不变 | M1 遗留 BUG-13，用户决定按钮置灰提示 | BE-07、FE-05 |
 
 ## 13. 实现说明（开发补充）
 - 后端：
@@ -1201,9 +1213,10 @@ Redis key 规范（`auth/cache_keys.py`）：
   - 契约更新后的前端调整（TQ-06/TQ-07，仅单测验证，未联调）：
     - 组织：集团下可新增“公司/部门”（`allowedChildTypes('group')`），移动时部门可选集团为新上级；**（已被后续契约取代）**前端不再自行推算受保护节点，见下一条；后端 403102 提示由拦截器/删除错误处理直接展示后端 message。删除组织遇 409106 时弹窗列出 `data.roles` 与 `total`（超过列出数量时提示“等 n 个”）；`orgApi.remove` 改为 `skipErrorToast`，由页面分流 409106 与其他错误。
     - 日志摘要（`summary.ts`）按 5.8 结构约定解析：新建仅 after、删除仅 before、编辑 before/after 逐字段对比（常见字段与状态/角色类型/组织类型值显示中文）；组织删除的 `custom_role_refs_removed` 以附加行展示；授权含 `permissions`/`custom_orgs` 的 added/removed 与 `data_scope`；分配角色为角色名数组前后对比；审计查看 `document_name` 以键值展示；其余未知结构 JSON。
-  - 组织保护（5.2.0/5.2.1 定稿，仅单测验证，未联调）：删除了前端自行推算的 `protectedOrgIds`。“停用”“删除”按钮直接按组织管理树节点的 `disable_blocked_reason`、`delete_blocked_reason` 置灰（非 null 即不可用），并用 Tooltip 展示文案，不隐藏（`getBlockedReason` + 页面 `renderGuarded`）；已停用节点的“启用”不受限；集团节点后端未给文案时前端兜底置灰“集团节点不能移动、停用或删除”。任何组织变更（新增/编辑/移动/停用/启用/删除）后都会重新拉取树以同步标记。请求仍返回 403102（管辖根，停用/删除）、403103（本人组织链，仅停用）时展示后端 message；409106 弹窗展示角色名单。`iam-contract.ts` 的 `OrgNode` 增加这两个可选字段。新增组织类型限制：集团→公司/部门，公司→公司/部门，部门→部门。“移动”按钮仍仅在上级可见时显示（对应 403101）。
+  - 组织保护（5.2.0/5.2.1 定稿，仅单测验证，未联调）：删除了前端自行推算的 `protectedOrgIds`。“停用”“删除”按钮直接按组织管理树节点的 `disable_blocked_reason`、`delete_blocked_reason` 置灰（非 null 即不可用），并用 Tooltip 展示文案，不隐藏（`getBlockedReason` + 页面 `renderGuarded`）；已停用节点的“启用”不受限；集团节点后端未给文案时前端兜底置灰“集团节点不能移动、停用或删除”。任何组织变更（新增/编辑/移动/停用/启用/删除）后都会重新拉取树以同步标记。请求仍返回 403102（管辖根，停用/删除）、403103（本人组织链，仅停用）时展示后端 message；409106 弹窗展示角色名单。`iam-contract.ts` 的 `OrgNode` 增加这两个可选字段。新增组织类型限制：集团→公司/部门，公司→公司/部门，部门→部门。“移动”按钮见下一条（BUG-13 后改为由后端字段决定）。
   - 列表错误状态（BUG-12）：所有 ProTable 列表页（组织、用户、角色、角色用户抽屉、操作日志、登录日志）的 `request` 统一用 `hooks/useTableError` 的 `wrap` 包装：接口失败不再抛出，返回空数据并记录错误，通过 `locale.emptyText` 显示 `components/TableErrorState`（“加载失败”+ 后端 message + “重试”按钮，重试即 `actionRef.reload()`），不再保留旧数据；成功后自动清除错误态。错误 toast 仍由拦截器弹出。测试环境补了 `window.matchMedia` 的 jsdom polyfill（`src/test-setup.ts`）。
   - 只读标记 `manageable`（5.2.0a，仅单测验证，未联调）：`OrgNode`、`OrgOption`、`UserItem` 增加可选 `manageable`，缺省视为 true（`isManageable`）。组织行与用户行 `manageable=false` 时操作列只显示“只读”，不渲染任何管理按钮；`OrgTreeSelect` 新增 `disableUnmanageable`，用作写入目标时置灰只读节点——已用于新增组织的上级、移动目标、新增/编辑用户的所属组织、角色 CUSTOM 数据范围的组织多选；筛选用途（如用户页左侧树）不置灰。授权抽屉“数据范围”下方固定显示提示“用户拥有多个角色时，数据范围取所有启用角色的并集，并对该用户拥有的所有功能生效。”。写操作收到 403001 时展示后端 message（默认拦截器提示/`notifyError`，已加单测）。
+  - 移动保护（BUG-13，仅单测验证，未联调）：“移动”按钮改为完全以组织树节点的 `move_blocked_reason` 为准（`getBlockedReason(node,'move')`，非 null 置灰并 Tooltip 显示文案，不隐藏；集团节点后端未给文案时兜底置灰），删除了原先按“上级节点是否可见”推断的前端逻辑；移动请求返回 403101/403104 时由 `notifyError` 展示后端 message。`OrgNode` 增加可选 `move_blocked_reason`。
   - 单测：`pages/system/log/dict.test.ts`、`utils/{orgTree,lockout}.test.ts`、`pages/system/role/grantLogic.test.ts`、`pages/system/role/components/GrantDrawer.test.tsx`（渲染层验证置灰与保持勾选）、`pages/system/log/{timeRange,summary}.test.ts`、`pages/system/user/impact.test.ts`。
 
 - **M1 第 1 轮测试缺陷修复与组织规则变更（iam + platform_common，已实现）**：
@@ -1227,3 +1240,4 @@ Redis key 规范（`auth/cache_keys.py`）：
   - **`manageable` 标记**：`OrgNode`、`OrgOption`、`UserItem` 新增 `manageable: bool`（默认 true；写接口响应恒为 true）。`manageable=false` 的节点 `disable_blocked_reason/delete_blocked_reason` 为 null，保护规则只对可管理节点生效。SELF 与其它范围并存时按行区分（部门内可管理，组织链上其余节点只读）。
   - **账号大小写（4.2）**：现有实现已区分大小写（唯一约束按原值，登录按原值匹配，锁定计数按原值），无需改动；补单测：`lisi` 存在时可新增 `LiSi`、再建 `lisi` → 409111、`LISI` 登录 401101。
   - **测试**：iam `tests/unit/test_self_scope.py`（AC-75 用户/组织只读与 403001、`assignable` 管理范围、混合角色按行 manageable；AC-76 并集与功能来源无关、停用角色后收缩；大小写）；共享库 `tests/test_hardening.py` 增加 `validate_for_runtime` 与 `create_app` 拒绝启动用例。
+- **BUG-13 移动保护（iam，BE-07，已实现）**：`org_protection.OrgProtection` 增加 `move_error/check_move/move_blocked_reason(org, parent_manageable)`，判定顺序 M1 集团 400114 → M2 目标∈管辖根（非超管/非 ALL）且当前上级不可管理 403101（新文案"不能调整自己管辖范围根组织的上级，请联系上级管理员"）→ M3 当前上级不可管理（不可见或仅 SELF 只读）403104（新增，"当前上级组织不在您的管理范围内，不能移动该组织"）。`OrgNode` 增加 `move_blocked_reason`（仅组织树/单节点查询计算；`manageable=false` 的节点为 null；上级可管理性由树内节点或批量补查父节点得出，无 N+1）。`move_org` 在 `_get_visible`（节点须可管理，否则 403001）之后、version 与目标上级校验之前调用 `check_move`，与树提示同源；旧的内联 403101 判断已移除。新增单测 `tests/unit/test_org_move_protection.py`（子公司管理员 403101 且先于目标校验、SELF 只读上级 403104、超管/ALL 仅命中 M1、CUSTOM 管辖根）。

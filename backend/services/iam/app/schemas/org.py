@@ -36,6 +36,7 @@ class OrgNode(BaseModel):
     # 保护规则提示（5.2.0）：仅组织管理树与单节点查询计算；非 null 时前端置灰对应按钮并展示该文案
     disable_blocked_reason: str | None = None
     delete_blocked_reason: str | None = None
+    move_blocked_reason: str | None = None
     created_at: LocalDatetime
     children: list[OrgNode] = Field(default_factory=list)
 

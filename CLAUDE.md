@@ -130,6 +130,7 @@ backend/services/<服务>/
 - 主键 `id BIGINT` 自增。
 - 所有表含：`created_at`、`updated_at`、`created_by`、`updated_by`、`is_deleted`（逻辑删除）。
 - 表结构变更**必须**走 Alembic 迁移，禁止 `metadata.create_all`。
+  - 例外：kb 的向量 HNSW 索引（`kb.ix_seg_hnsw_m{模型ID}`、`kb.ix_child_hnsw_m{模型ID}`）依赖运行时的模型 ID 与维度，由 kb-worker 以 `CREATE INDEX CONCURRENTLY` 在运行时创建、对账与删除，不走 Alembic。除此之外的任何表结构/索引变更仍必须走 Alembic 迁移（用户 2026-11-12 确认）。
 - 受数据权限控制的业务表**必须**含 `company_id`、`dept_id`、`created_by`。
 - 登录、授权变更、删除等关键操作写操作日志表。
 - 一个 PostgreSQL 实例、一个库（`kbp`，测试库 `kbp_test`），**每个服务一个 schema**（iam / kb / open / chat）。禁止跨 schema 的外键、JOIN 和子查询；跨服务引用只存 ID，需要展示/筛选时使用本服务的只读副本表（由事件同步）或内部接口。

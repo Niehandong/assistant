@@ -1,6 +1,6 @@
 # M3 开放检索 技术方案（open 服务 + 生产部署）
 
-- 关联：`./prd.md`（v0.2）F-17 ~ F-19，AC-52 ~ AC-62、AC-70 ~ AC-73；总体方案 `./tech-design.md`；共享库 `./tech-design-m1.md` 3.2；kb 内部接口 `./tech-design-m2.md` 5.9
+- 关联：`./prd.md`（v0.4）F-17 ~ F-19，AC-52 ~ AC-62、AC-70 ~ AC-73；总体方案 `./tech-design.md`；共享库 `./tech-design-m1.md` 3.2；kb 内部接口 `./tech-design-m2.md` 5.9
 - 状态：草稿
 - 本分册覆盖：BE-24 ~ BE-29、FE-18 ~ FE-22
 - 前置：M1 完成；联调开放检索需要 M2 的 BE-21、BE-22
@@ -67,6 +67,7 @@ open 进程 lifespan 内启动：`stream:open.call_logs` 消费者（批量入�
 | 6 | `enabled` | 启用 | | |
 
 - 列表中的 `status` 为计算值；`stored_status`（`enabled`/`disabled`/`admin_disabled`）另行返回供前端判断按钮。
+- **`admin_disabled` 是终态**（PRD F-17 规则 9、Q-12/A-27：管理员只能停用/删除，不能启用；创建人不能自行启用 → 系统中没有任何人能把它恢复为启用）。因此存储状态为 `admin_disabled` 的密钥，创建人只能**查看、查看可检索名单、查看调用日志、删除**；编辑、重新生成、启用/停用一律拒绝（矩阵见 5.1.0）。创建人如需继续使用开放检索，应新建密钥；管理员若要彻底禁止某人使用，应收回其 `openapi:apikey:manage`（见第 10 节风险）。
 - 当前可检索知识库：调 kb `POST /internal/v1/access/accessible-datasets`（`user_ids=[创建人]`，指定模式时带 `dataset_ids`）。列表接口对同一页中的创建人批量调用一次。
 
 ### 3.3 开放检索鉴权链（`key_auth.py` + `retrieve_service.py`）
@@ -170,10 +171,20 @@ open 进程 lifespan 内启动：`stream:open.call_logs` 消费者（批量入�
 | 400602 | — | 过期时间必须晚于当前时间 |
 | 400603 | — | IP 白名单格式不正确或超过 20 条 |
 | 400604 | — | 调用日志查询时间跨度不能超过 90 天 |
-| 403604 | — | 密钥已被管理员停用，无法启用 |
+| 403604 | — | 密钥已被管理员停用，无法启用（5.1.5 状态变更） |
+| 403605 | — | 密钥已被管理员停用，无法修改（5.1.4 编辑、5.1.6 重新生成） |
 | 409601 | — | 密钥名称已存在 |
 
-开放检索接口的通用错误（400001、503001、500000）的 `error_type` 分别为 `INVALID_PARAMS`、`SERVICE_UNAVAILABLE`、`INTERNAL_ERROR`。
+开放检索接口（5.4）还会返回 3 个通用错误码。**message 与共享库 `CommonErrors` 完全一致，不另起文案**（API 文档页按此展示，外部系统看到的就是这两句）：
+
+| code | HTTP | error_type | message（固定） | 触发 |
+|---|---|---|---|---|
+| 400001 | 400 | INVALID_PARAMS | 参数不合法 | 参数校验失败（`data.errors` 指出字段）；含 path 中 `dataset_id` 非整数、body 非合法 JSON |
+| 503001 | 503 | SERVICE_UNAVAILABLE | 依赖服务暂不可用，请稍后重试 | 调 kb 检索不可达/超时（`OPEN_RETRIEVE_TIMEOUT_SECONDS`）、Redis/数据库不可用或连接池耗尽、加载创建人权限上下文时 iam 不可用；可重试 |
+| 500000 | 500 | INTERNAL_ERROR | 系统繁忙，请稍后重试 | 未预期异常（不暴露堆栈）；可稍后重试，持续出现请联系平台管理员并提供 `request_id` |
+
+- 开放检索接口的**全部 10 个错误码**：401601、403601、403602、403603、404601、400001、429601、503601、503001、500000。任何出口（包括全局异常处理器兜底产生的 503001/500000）`data` 都必须含 `error_type` 与 `request_id`（BE-27）。
+- 管理类接口（5.1~5.3，需登录）另会返回通用错误码 400001、401001、401002、403001、403002、404000、409001、500000、503001（含义与 message 见总体方案 4.2），不在 API 文档页展示。
 
 ### 5.1 我的 API 密钥
 
@@ -187,6 +198,21 @@ open 进程 lifespan 内启动：`stream:open.call_logs` 消费者（批量入�
  "created_at": "2026-11-11T08:00:00+08:00", "version": 2}
 ```
 `scope_type=all` 时 `dataset_ids=[]`。
+
+#### 5.1.0 创建人操作与存储状态矩阵
+
+| 操作 | `stored_status=enabled` | `disabled` | `admin_disabled` | admin_disabled 时的错误码 |
+|---|---|---|---|---|
+| 查看详情 / 可检索名单（5.1.3、5.1.8） | 允许 | 允许 | 允许 | — |
+| 编辑（5.1.4） | 允许 | 允许 | **拒绝** | 403605 |
+| 停用（5.1.5 `status=disabled`） | 允许 | 幂等成功（不写日志、version 不变） | **拒绝** | 403604 |
+| 启用（5.1.5 `status=enabled`） | 幂等成功（同上） | 允许 | **拒绝** | 403604 |
+| 重新生成（5.1.6） | 允许 | 允许（存储状态保持 disabled） | **拒绝** | 403605 |
+| 删除（5.1.7） | 允许 | 允许 | **允许** | — |
+| 查看调用日志（5.2.1） | 允许 | 允许 | 允许 | — |
+
+- 计算状态 `owner_unavailable` / `expired` / `no_dataset` 不影响上表（以存储状态判断）；例如已过期的密钥仍可编辑延长过期时间（F-17 规则 8）。
+- 校验顺序（4 个写接口一致）：本人且未删除（否则 404000）→ `SELECT ... FOR UPDATE` → 存储状态为 `admin_disabled`（403604 / 403605）→ `version`（409001）→ 业务校验。状态检查放在 version 之前：管理员停用会使 version +1，创建人此时拿旧 version 操作应看到"已被管理员停用"而非"数据已被他人修改"。
 
 #### 5.1.1 `GET /api/v1/open-platform/api-keys`
 - 权限码 `openapi:apikey:manage`；范围：仅 `created_by = 当前用户`（不按 data_scope）
@@ -213,19 +239,26 @@ open 进程 lifespan 内启动：`stream:open.call_logs` 消费者（批量入�
 #### 5.1.4 `PUT /api/v1/open-platform/api-keys/{id}`
 - 权限码 `openapi:apikey:manage`；仅本人
 - body：同创建（全部字段）+ `version`；校验同创建
+- 存储状态为 `admin_disabled` → 403605（5.1.0）
 - 删除缓存；操作日志 api_key/update（检索范围变化在摘要中体现）
+- 响应 data：`ApiKeyItem`
 
 #### 5.1.5 `PUT /api/v1/open-platform/api-keys/{id}/status`
+- 权限码 `openapi:apikey:manage`；仅本人
 - body：`status`（`enabled`/`disabled`）、`version`
-- 存储状态为 `admin_disabled` 时任何修改 → 403604
-- 操作日志 api_key/status
+- 存储状态为 `admin_disabled` 时无论目标值 → 403604；目标值与当前存储状态相同 → 幂等成功（返回当前 `ApiKeyItem`，不写操作日志，version 不变）
+- 响应 data：`ApiKeyItem`；操作日志 api_key/status
 
 #### 5.1.6 `POST /api/v1/open-platform/api-keys/{id}/regenerate`
-- body：`version`；生成新明文、替换哈希与前缀，旧值立即失效（删除旧哈希缓存）；存储状态不变
+- 权限码 `openapi:apikey:manage`；仅本人
+- body：`version`；生成新明文、替换哈希与前缀，旧值立即失效（删除旧哈希缓存）；存储状态不变（`disabled` 的密钥重新生成后仍为 `disabled`）
+- 存储状态为 `admin_disabled` → 403605（5.1.0）
 - 响应 data：`{"api_key": "kb-...", "item": ApiKeyItem}`；操作日志 api_key/regenerate
 
 #### 5.1.7 `DELETE /api/v1/open-platform/api-keys/{id}`
-- 逻辑删除，删除缓存；操作日志 api_key/delete
+- 权限码 `openapi:apikey:manage`；仅本人；**任何存储状态都允许**（含 `admin_disabled`，创建人可清理被停用的密钥）
+- 逻辑删除，删除缓存；操作日志 api_key/delete（被管理员停用的密钥删除时摘要带 `"stored_status":"admin_disabled"`，便于审计追溯）
+- 响应 data：`null`
 
 #### 5.1.8 `GET /api/v1/open-platform/api-keys/{id}/accessible-datasets`
 - 仅本人；data：`[{"id": 10, "name": "集团制度"}]`（当前真正可检索的知识库：创建人可访问 ∩ 指定集合）
@@ -249,9 +282,21 @@ open 进程 lifespan 内启动：`stream:open.call_logs` 消费者（批量入�
 | 接口 | 权限码 | 数据范围 | 说明 |
 |---|---|---|---|
 | `GET /api/v1/open-platform/audit/api-keys` | openapi:apikey:audit | `api_key.company_id / dept_id / created_by` | query：`page`、`page_size`、`creator_keyword`（user_ref 姓名/账号）、`org_id`（dept_id 含下级，org_ref）、`status`（`enabled`/`disabled`/`admin_disabled`/`expired`/`owner_unavailable` 可筛选；`owner_unavailable` 筛选按 user_ref 状态近似，展示值仍为精确计算）。items：`ApiKeyItem` 去掉 `dataset_ids` 与 `ip_whitelist`，增加 `creator: {"id","name","username","status"}`、`company: {"id","name"}`、`dept: {"id","name"}` |
-| `PUT /api/v1/open-platform/audit/api-keys/{id}/disable` | openapi:apikey:audit | 过滤 | body：`version`；存储状态 → `admin_disabled`，记录 `admin_disabled_by/at`；删除缓存；操作日志 api_key/admin_disable |
-| `DELETE /api/v1/open-platform/audit/api-keys/{id}` | openapi:apikey:audit | 过滤 | 逻辑删除；操作日志 api_key/admin_delete |
-| `GET /api/v1/open-platform/audit/call-logs` | openapi:apikey:audit | `api_call_log.company_id / dept_id / created_by` | query：同 5.2.1 + `creator_keyword`、`include_unknown`（bool，仅超管或 data_scope.all 生效，返回 `api_key_id IS NULL` 的记录）；items 增加 `creator: {"id","name"} \| null` |
+| `PUT /api/v1/open-platform/audit/api-keys/{id}/disable` | openapi:apikey:audit | 过滤 | body：`version`；存储状态为 `enabled` **或 `disabled`**（创建人自行停用的也可锁定，防止其日后自行启用）→ `admin_disabled`，记录 `admin_disabled_by/at`，version +1；删除缓存；操作日志 api_key/admin_disable（摘要含停用前存储状态）。已是 `admin_disabled` → 幂等成功（不校验 version、不写日志、version 不变）。响应 data：审计列表的单项结构 |
+| `DELETE /api/v1/open-platform/audit/api-keys/{id}` | openapi:apikey:audit | 过滤 | 任何存储状态都允许；逻辑删除；删除缓存；操作日志 api_key/admin_delete；响应 data：`null` |
+| `GET /api/v1/open-platform/audit/call-logs` | openapi:apikey:audit | `api_call_log.company_id / dept_id / created_by` | query：同 5.2.1 + `creator_keyword`、`include_unknown`（bool，默认 false）；items 增加 `creator: {"id","name"} \| null` |
+| `GET /api/v1/open-platform/audit/capabilities` | openapi:apikey:audit | 不按数据范围（只读当前用户的 AuthContext） | 无参数；data：`{"can_view_unknown_calls": true}`，见下文 |
+
+**`include_unknown` 与能力标记（2026-11-12 新增）**：
+- 判定函数 `audit_service.can_view_unknown_calls(ctx) -> bool = ctx.is_super_admin or ctx.data_scope.all`（PRD F-19 规则 6"集团管理员和超级管理员"在实现上对应"超管或任一启用角色数据范围为 ALL"，与 M1 5.2.0"无管辖根限制"口径一致）。capabilities 接口与 call-logs 查询**必须调用同一函数**，保证"开关显示"与"开关生效"一致。
+- `include_unknown=true` 且 `can_view_unknown_calls=true`：查询条件 = `(data_scope_filter) OR api_key_id IS NULL`，其余筛选条件照常叠加（因此同时带 `api_key_id` 或 `creator_keyword` 时自然不会返回无法识别密钥的行）。
+- `include_unknown=true` 但无此能力：**静默忽略**（按 false 处理，不报错），不泄露是否存在此类记录。
+- capabilities 响应：
+  | 字段 | 类型 | 说明 |
+  |---|---|---|
+  | can_view_unknown_calls | bool | 为 true 时前端显示"含无法识别密钥的调用"开关 |
+  
+  取舍：不放进 `/auth/me`（iam）——该规则属于 open 的业务语义，放 iam 会让 iam 承载 open 的判断口径，且需改动已完成并测试的 M1 契约与前端全局 store；也不放进 call-logs 的分页响应——会破坏统一分页结构，且开关需要在首次查询前就决定是否显示。权限上下文按 epoch 失效，角色数据范围调整后下一次请求即生效，无需重新登录。
 
 审计接口**不提供**编辑、启用、重新生成（AC-72：对应个人接口按 created_by 过滤，管理员调用他人密钥 → 404000）。
 
@@ -319,7 +364,7 @@ open 进程 lifespan 内启动：`stream:open.call_logs` 消费者（批量入�
 使用的权限码已在 M1 seed 写入：`openapi:menu:root`、`openapi:apikey:manage`、`openapi:log:list`、`openapi:doc:view`、`openapi:apikey:audit`。M3 不新增权限点。
 
 - 普通员工默认拥有前四项；公司管理员、集团管理员另有 `openapi:apikey:audit`。
-- 子公司管理员：只能审计本公司及下属公司员工的密钥与日志（按密钥 company_id/dept_id）；不能看到"无法识别密钥"的日志。
+- 子公司管理员：只能审计本公司及下属公司员工的密钥与日志（按密钥 company_id/dept_id）；不能看到"无法识别密钥"的日志（`GET /audit/capabilities` 返回 `can_view_unknown_calls=false`，前端不显示开关）。
 - 收回某角色的 `openapi:apikey:manage`：持有人的全部密钥即时变为"创建人不可用"（3.2）。
 
 ## 7. 后端任务清单
@@ -332,16 +377,16 @@ open 进程 lifespan 内启动：`stream:open.call_logs` 消费者（批量入�
 ### BE-25（open）我的 API 密钥 — F-17
 - 文件：`app/api/v1/api_keys.py`、`app/schemas/api_key.py`、`app/services/{api_key_service,key_status}.py`、`app/repositories/api_key_repo.py`、`app/api/internal/stats.py`、tests
 - 内容：5.1 全部、5.5；3.1、3.2；缓存删除。
-- 完成标准：AC-52、AC-53、AC-71（数量展示部分）、AC-72（创建人不能启用被管理员停用的密钥）单测；明文只在两个接口出现；跨用户 ID 直访 404000。
+- 完成标准：AC-52、AC-53、AC-71（数量展示部分）、AC-72（创建人不能启用被管理员停用的密钥）单测；明文只在两个接口出现；跨用户 ID 直访 404000；5.1.0 矩阵逐格单测（admin_disabled 下编辑/重新生成 403605、启停 403604、删除成功；状态检查先于 version；启停同值幂等）。
 
 ### BE-26（open）密钥审计 — F-17、F-19
 - 文件：`app/api/v1/audit.py`、`app/schemas/audit.py`、`app/services/audit_service.py`、tests
 - 内容：5.3 全部（审计调用日志的查询函数与 BE-28 共用 `call_log_repo`，若 BE-28 未完成则本任务先实现查询部分）。
-- 完成标准：AC-55、AC-72 单测；7 种数据范围在密钥审计上生效；`include_unknown` 仅 ALL 生效。
+- 完成标准：AC-55、AC-72 单测；7 种数据范围在密钥审计上生效；`include_unknown` 仅 ALL/超管生效、其他人静默忽略；`GET /audit/capabilities` 与 call-logs 共用 `can_view_unknown_calls`（超管 / ALL → true，COMPANY_AND_CHILD 等 → false，单测覆盖）；管理员停用 `disabled` 的密钥成功、对 `admin_disabled` 幂等。
 
 ### BE-27（open）开放检索 API 与调用日志写入 — F-18、F-19
 - 文件：`app/api/v1/open_retrieve.py`、`app/schemas/retrieve.py`、`app/services/{key_auth,rate_limit,retrieve_service}.py`、`app/jobs/call_log_consumer.py`、tests
-- 内容：3.3、3.4（生产与消费）、5.4；无效密钥日志按 IP 采样；`Retry-After`。
+- 内容：3.3、3.4（生产与消费）、5.4；无效密钥日志按 IP 采样；`Retry-After`；对 `/api/v1/open/` 前缀注册异常处理包装：任何错误响应（含全局处理器兜底的 400001/503001/500000）`data` 都补齐 `error_type`（按 5.0 映射）与 `request_id`，message 沿用共享库 `CommonErrors` 原文，并照常写调用日志（result 分别为 `invalid_params` / `service_unavailable` / `internal_error`）。
 - 完成标准：AC-54、AC-56~AC-60、AC-62、AC-70、AC-71、AC-73 单测（kb 内部接口用 mock）；每个出口都产生且仅产生一条日志；限流窗口边界；50 并发压测（mock kb，open 自身开销 P95 ≤ 50ms，结果写入实现说明）。
 
 ### BE-28（open）调用日志查询、统计、清理 — F-19
@@ -355,6 +400,7 @@ open 进程 lifespan 内启动：`stream:open.call_logs` 消费者（批量入�
   - `backend/Dockerfile`：`python:3.12-slim` 多阶段；`ARG SERVICE`；安装 `requirements.txt` 与 `libs/platform_common`；复制 `services/${SERVICE}`；工作目录为服务目录；默认命令 `python main.py`；非 root 用户；`HEALTHCHECK` 调 `/healthz`（worker 例外）。
   - `docker-compose.prod.yml`：`nginx`（前端镜像，FE-22）、`iam`、`kb`、`kb-worker`（kb 镜像，`command: python worker.py`）、`open`、`postgres`（pgvector/pgvector:pg16）、`redis`、`minio`；一次性迁移服务 `iam-migrate`/`kb-migrate`/`open-migrate`（`alembic upgrade head`，iam 额外 `python -m app.seed`），业务服务 `depends_on` 迁移完成；所有密钥类配置（JWT 私钥/公钥文件挂载、`INTERNAL_API_TOKEN`、`MODEL_SECRET_KEY`、`API_KEY_PEPPER`、数据库与 MinIO 凭据）通过 `.env.prod` 注入，`.env.prod.example` 只放占位符；服务监听 `0.0.0.0`，容器内沿用各服务默认端口（iam 8301、kb 8302、open 8303），中间件使用容器端口（5432/6379/9000）与服务名互联，不暴露到宿主机（或按需映射）；前端 Nginx 上游即 `iam:8301`、`kb:8302`、`open:8303`。
   - README：构建（`docker build --build-arg SERVICE=iam -t kbp-iam:<ver> backend`）、单服务升级、扩容（`--scale kb-worker=4`）、各服务 DB 账号与 schema 授权 SQL 示例。
+  - **PostgreSQL 参数与账号**：postgres 服务按 M2 3.10.3"生产"列设置 `command` 参数（按实际主机内存比例调整，README 给出换算方法）；kb 服务的 DB 账号须为 `kb` schema 下表的 owner（worker 需在运行时创建/删除 HNSW 索引，M2 3.10.2），README 授权 SQL 体现。
   - **安全基线（必须）**：
     - 所有服务 `APP_ENV=prod`；`INTERNAL_API_TOKEN` 必须覆盖为 ≥32 位随机串（`.env.prod.example` 中写 `INTERNAL_API_TOKEN=<openssl rand -hex 32 生成>`），否则服务按共享库 `validate_for_runtime()` 拒绝启动；`MODEL_SECRET_KEY`、`API_KEY_PEPPER`、数据库/MinIO/Redis 密码同理必须覆盖（kb/open 启动校验）。
     - `TRUSTED_PROXIES` **只填前端 Nginx 容器的地址或其所在 compose 网段**（例如为 compose 网络固定子网 `172.30.0.0/24` 并把 Nginx 固定为 `172.30.0.10/32`），不得包含 `127.0.0.1`、`0.0.0.0/0` 或宿主机网段；否则可通过伪造 `X-Forwarded-For` 绕过 API 密钥 IP 白名单与日志 IP。
@@ -371,7 +417,7 @@ open 进程 lifespan 内启动：`stream:open.call_logs` 消费者（批量入�
 - 路由 `/openapi/keys`；文件 `src/pages/openapi/keys/index.tsx`、`components/{ApiKeyFormModal,ApiKeySecretModal,AccessibleDatasetsModal}.tsx`
 - 接口：5.1 全部、M2 `GET /api/v1/kb/datasets/options`（指定知识库多选，远程搜索）
 - 权限码：`openapi:apikey:manage`
-- 内容：查询（名称、状态）；列表列按 PRD（检索范围显示"全部可访问 / 指定 x 个"、当前可检索数可点击查看名单、状态 6 种中文标签、近 7 天调用/失败、操作：编辑/停用启用/重新生成/删除/日志（跳 `/openapi/logs?api_key_id=`））；`stored_status=admin_disabled` 时不显示启用、标签"已被管理员停用"；表单：检索范围单选与多选（1~50）、过期时间（永不过期 / 日期，默认一年后）、IP 白名单（多行输入，前端格式校验）、每分钟上限（1~600）；创建/重新生成成功弹窗显示明文 + 复制按钮 + 醒目提示"关闭后将无法再次查看"，勾选"我已妥善保存"才能关闭；重新生成、删除二次确认。
+- 内容：查询（名称、状态）；列表列按 PRD（检索范围显示"全部可访问 / 指定 x 个"、当前可检索数可点击查看名单、状态 6 种中文标签、近 7 天调用/失败、操作：编辑/停用启用/重新生成/删除/日志（跳 `/openapi/logs?api_key_id=`））；`stored_status=admin_disabled` 时按 5.1.0 只保留"删除""日志"（及可检索名单查看），**隐藏编辑、停用/启用、重新生成**，标签"已被管理员停用"并在悬停提示"已被管理员停用，无法修改或启用，可删除后新建"；写操作收到 403604/403605（列表数据过期时）提示后刷新列表；表单：检索范围单选与多选（1~50）、过期时间（永不过期 / 日期，默认一年后）、IP 白名单（多行输入，前端格式校验）、每分钟上限（1~600）；创建/重新生成成功弹窗显示明文 + 复制按钮 + 醒目提示"关闭后将无法再次查看"，勾选"我已妥善保存"才能关闭；重新生成、删除二次确认。
 - 完成标准：AC-52~AC-54、AC-71、AC-72 前端行为。
 
 ### FE-19 调用日志页（本人） — F-19
@@ -385,14 +431,15 @@ open 进程 lifespan 内启动：`stream:open.call_logs` 消费者（批量入�
 - 路由 `/system/api-keys`；文件 `src/pages/system/apikey-audit/index.tsx`、`components/AuditCallLogDrawer.tsx`（内嵌 `CallLogTable mode="audit"`，按密钥过滤）
 - 接口：5.3 全部、M1 orgs/options
 - 权限码：`openapi:apikey:audit`
-- 内容：查询（创建人、所属组织树、状态）；列表列按 PRD；操作仅：停用（已停用/管理员停用时隐藏）、删除（二次确认）、查看调用日志；页面另提供"全部调用日志"抽屉（含无法识别密钥开关，仅当后端返回数据时显示）。
+- 接口补充：`GET /api/v1/open-platform/audit/capabilities`（5.3）
+- 内容：查询（创建人、所属组织树、状态）；列表列按 PRD；操作仅：停用（仅 `stored_status=admin_disabled` 时隐藏；`enabled`、`disabled` 均显示，二次确认文案"停用后创建人无法自行启用"）、删除（二次确认）、查看调用日志；页面另提供"全部调用日志"抽屉：打开抽屉时请求 capabilities，`can_view_unknown_calls=true` 才显示"含无法识别密钥的调用"开关（请求失败或 false 均不显示、不传 `include_unknown`）；按单个密钥打开的 `AuditCallLogDrawer` 不显示该开关。
 - 完成标准：AC-55、AC-58（日志可见性）、AC-72 前端行为。
 
 ### FE-21 API 文档页 — F-18
 - 路由 `/openapi/docs`；文件 `src/pages/openapi/docs/index.tsx`、`docs/content.tsx`
 - 接口：无（静态内容）
 - 权限码：`openapi:doc:view`
-- 内容：调用地址（`{window.location.origin}/api/v1/open/datasets/{dataset_id}/retrieve`）、鉴权方式、请求参数表、成功/失败响应示例（取 5.4）、错误码与 error_type 表（5.0）、curl 示例：
+- 内容：调用地址（`{window.location.origin}/api/v1/open/datasets/{dataset_id}/retrieve`）、鉴权方式、请求参数表、成功/失败响应示例（取 5.4）、错误码与 error_type 表（5.0，10 行；message 一字不差取 5.0，其中 503001 为"依赖服务暂不可用，请稍后重试"、500000 为"系统繁忙，请稍后重试"）、curl 示例：
   ```bash
   curl -X POST "https://kb.example.com/api/v1/open/datasets/10/retrieve" \
     -H "Authorization: Bearer kb-AbCd..." -H "Content-Type: application/json" \
@@ -421,6 +468,7 @@ open 进程 lifespan 内启动：`stream:open.call_logs` 消费者（批量入�
 - 无存量数据；回滚 `alembic downgrade base`（open schema）。open 服务回退不影响 iam/kb。
 - 调用日志写入依赖 Redis Stream：Redis 故障时检索也会因会话/上下文无法读取而失败（fail-closed），不会出现"调用成功但无日志"的大面积情况；单条 XADD 失败只记运行日志。
 - `API_KEY_PEPPER` 一旦设置不可更换（否则全部密钥失效），部署文档中需醒目说明。
+- 管理员停用只针对单个密钥：创建人仍可删除后新建密钥继续调用（PRD 未禁止）。若需禁止某人使用开放检索，应收回其角色的 `openapi:apikey:manage`（其全部密钥即时变为"创建人不可用"）。admin_disabled 为终态，误停用只能由创建人新建密钥恢复使用。
 
 ## 11. 测试要点（M3）
 - 鉴权链每一步的错误码与 error_type（AC-54、AC-57、AC-58）；错误顺序：无效密钥优先于 IP，停用优先于过期。
@@ -428,6 +476,9 @@ open 进程 lifespan 内启动：`stream:open.call_logs` 消费者（批量入�
 - 指定范围（AC-71）：失去/恢复权限时可检索数变化。
 - 管理员密钥不含管理视图范围（AC-73）；超管同样。
 - 审计数据范围：A 公司管理员看不到 B 公司密钥，对 B 公司密钥的停用/删除 → 404000（AC-55）；管理员不能编辑/启用/重新生成他人密钥（AC-72）。
+- admin_disabled 终态（5.1.0）：创建人编辑/重新生成 → 403605、启用/停用 → 403604、删除成功；拿管理员停用前的旧 version 操作返回 403605/403604 而非 409001；管理员可停用创建人已自行停用的密钥，之后创建人启用 → 403604；重复停用幂等。
+- 无法识别密钥开关：超管、ALL 角色 capabilities 为 true 且 `include_unknown=true` 能查到 `api_key_id IS NULL` 的行；COMPANY_AND_CHILD 公司管理员 capabilities 为 false，直接构造 `include_unknown=true` 请求也查不到；调整角色数据范围后无需重新登录即生效。
+- 开放检索 503001/500000 响应体含 `error_type`、`request_id`，message 与 API 文档页一致（停 kb 模拟 503001）。
 - 限流（AC-62）：同一分钟第 11 次起 429601，跨分钟恢复；超限调用写日志；多实例 open 共享计数。
 - 参数校验（AC-59）：query 空/超 1000、top_k=50、score_threshold=-1、search_method 非法 → 400001 且指出字段。
 - 只返回启用内容（AC-60）。
@@ -443,7 +494,19 @@ open 进程 lifespan 内启动：`stream:open.call_logs` 消费者（批量入�
 | 2026-11-11 | 端口改为专属：open `PORT=8303`，`KB_RETRIEVAL_URL` 默认 `http://127.0.0.1:8302`；生产编排中服务与 Nginx 上游端口同步 | 用户确认：本机多项目共用 | BE-24、BE-29、FE-22 |
 | 2026-11-11 | 0001 迁移 downgrade 改为逐表 DROP、保留空 schema | 与 iam 一致：版本表在本服务 schema 内 | BE-24 |
 | 2026-11-11 | BE-29 增加生产安全基线：必须覆盖 `INTERNAL_API_TOKEN` 等密钥（启动校验）、`TRUSTED_PROXIES` 只填 Nginx 地址、Nginx 覆盖 `X-Forwarded-For`、上线检查清单；FE-22 同步 | 测试提出的部署安全建议，用户确认 | BE-29、FE-22 |
+| 2026-11-12 | BE-29 增加生产 PG 参数（M2 3.10.3）与 kb 账号需为表 owner（运行时建 HNSW 索引） | BE-21b 检索性能优化 | BE-29 |
+| 2026-11-12 | ①新增 `GET /api/v1/open-platform/audit/capabilities`（`openapi:apikey:audit`，data `{"can_view_unknown_calls": bool}`），与 audit/call-logs 共用 `can_view_unknown_calls(ctx)=超管 or data_scope.all`；明确 `include_unknown` 的叠加语义与"无能力时静默忽略"；**不改 `/auth/me`（M1 契约不变）**（5.3、第 6 节）。②5.0 补全开放检索 3 个通用错误码的固定 message：503001"依赖服务暂不可用，请稍后重试"、500000"系统繁忙，请稍后重试"（与共享库 `CommonErrors` 一致）及触发条件；所有出口须带 `error_type`/`request_id`。③admin_disabled 定为终态，新增 5.1.0 操作矩阵与 403605：创建人编辑/重新生成 → 403605，启停 → 403604，删除允许；状态检查先于 version；启停同值幂等；管理员可停用 `disabled` 的密钥，重复停用幂等；5.1.4~5.1.7 补齐权限码与响应 | FE-18/FE-20/FE-21 契约澄清申请（用户授权按推荐方案决定） | BE-25、BE-26、BE-27、FE-18、FE-20、FE-21 |
 
 ## 13. 实现说明（开发补充）
 - 后端：
-- 前端：
+- 前端（FE-18~FE-21，对契约开发 + mock 单测，未与 open 后端联调）：
+  - 类型与接口：`src/services/types/open-contract.ts`（手写，后端 OpenAPI 就绪后以 `pnpm gen:api` 生成的 `open.d.ts` 为准并核对差异）、`src/services/open.ts`（`apiKeyApi`/`callLogApi`/`auditApi`）；`src/services/kb.ts` 新增 `datasetApi.options`（M2 5.2.2）与类型 `DatasetOption`。创建/编辑密钥用 `skipErrorToast`，由 `logic.ts` 的 `mapSubmitError` 把 409601/400601/400602/400603/400001(errors) 映射到表单字段；其余写操作走默认拦截器提示。
+  - FE-18 `pages/openapi/keys`：ProTable（名称、状态筛选）；检索范围"全部可访问 / 指定 x 个"，"当前可检索"数可点开名单（5.1.8）；状态 6 种中文标签；`stored_status=admin_disabled` 时不显示停用/启用（标签"已被管理员停用"）；操作：编辑、停用/启用（停用二次确认）、重新生成与删除（二次确认）、日志（跳 `/openapi/logs?api_key_id=`）。表单 `ApiKeyFormModal`：范围单选 + 知识库远程多选（`components/DatasetOptionSelect.tsx`，数据来自 kb 5.2.2，仅本人可访问的知识库；编辑时用 5.1.8 名单回显名称，名单外的已选项标注"当前不可访问"）；过期时间"指定日期（默认今天+1 年，提交为当天 23:59:59）/永不过期"；IP 白名单多行输入（每行一条，也容许逗号/空白分隔，最多 20 条，IPv4 或 IPv4 CIDR，前端逐条校验并列出非法项）；限流 1~600 整数默认 60。注意：ProForm 的 `onFinish` 会把 DatePicker 的 dayjs 转成字符串，`toExpiresIso` 统一用 `dayjs()` 解析；ModalForm 需显式 `name="api_key_form"`，否则与搜索表单的 `name` 字段 id 冲突。
+  - 明文只显示一次：创建/重新生成响应的 `api_key` 只放在页面组件的 `useState`（不用 `useMutation`/query 缓存，不写 storage），`ApiKeySecretModal` 不可点遮罩/Esc/右上角关闭，必须勾选"我已妥善保存"才能点"关闭"，关闭后状态置空；复制走 `utils/clipboard.ts`（Clipboard API，非安全上下文回退 `execCommand`）。
+  - FE-19 `pages/openapi/logs` + 通用 `components/CallLogTable.tsx`（`mode="mine"|"audit"`）：时间范围默认近 7 天、最长 90 天（`components/callLog.ts`：选择器 `disabledDate` + 请求前校验，不可选未来）；查询文本截断 50 字、悬停全文；结果 11 种中文映射（未知值回退原值）；`?api_key_id=` 预填密钥筛选；密钥下拉取 `apiKeyApi.list(page_size=100)`；知识库下拉取 kb 5.2.2。审计模式额外显示创建人列/筛选，并走 `auditApi.callLogs`；`api_key=null` 的行显示"无法识别密钥"。
+  - FE-20 `pages/system/apikey-audit`：查询（创建人、所属组织树、状态 5 种）；操作列只有"停用"（仅 `stored_status=enabled` 时显示，二次确认）、"删除"（二次确认）、"调用日志"（`AuditCallLogDrawer`，固定该密钥）；工具栏"全部调用日志"抽屉带"含无法识别密钥的调用"开关（`include_unknown`，tooltip 注明仅集团管理员/超管有效）。页面没有编辑、启用、重新生成入口（AC-72）。创建人状态非启用时在创建人列追加标签。
+  - FE-21 `pages/openapi/docs`：静态内容放 `content.ts`（调用地址取 `window.location.origin`、请求参数表、curl/Python 示例、成功/失败响应示例取 5.4、10 个开放接口错误码与 error_type 表取 5.0/5.4），`CodeBlock.tsx` 带复制按钮。同时在 `pages/kb/detail/Layout.tsx` 左侧信息区补"知识库 ID"（可复制）。
+  - 路由：`router/routes.tsx` 替换 M3 四个占位（`/openapi/keys|logs|docs`、`/system/api-keys`），权限码 `openapi:apikey:manage`、`openapi:log:list`、`openapi:doc:view`、`openapi:apikey:audit`；vite proxy 无需改动。
+  - 单测（均 mock 接口）：`pages/openapi/keys/{logic,index}.test.tsx`、`components/ApiKeySecretModal.test.tsx`（明文只显示一次、需勾选才能关闭、关闭后 DOM 无明文、复制写剪贴板、IP/限流/范围校验、409601 字段错误、重新生成/删除二次确认、admin_disabled 无启用按钮）、`components/{callLog.test.ts,CallLogTable.test.tsx}`（90 天限制、截断、结果映射、预填密钥、审计模式）、`pages/openapi/docs/{content.test.ts,index.test.tsx}`（示例与契约字段一致、错误码表）、`pages/system/apikey-audit/{logic,index}.test.ts(x)`（无编辑/启用/重新生成、停用确认带 version）。
+  - 自查：因 5174 被其他进程占用，用 `vite --port 5199` + Playwright 路由 mock 截图检查四个页面与新建/明文弹窗渲染正常，已只关闭本次启动的进程。
+  - 契约澄清后的调整（2026-11-12）：①FE-18 `rowActions`：`admin_disabled` 只保留"删除""日志"（隐藏编辑、停用/启用、重新生成），行内显示"不可修改"并悬停提示"已被管理员停用，无法修改或启用，可删除后新建"；启停/重新生成/编辑收到 403604/403605 时提示后端 message 并刷新列表（编辑弹窗同时关闭）。②FE-20 `auditRowActions`：停用仅在 `admin_disabled` 时隐藏，`enabled`/`disabled` 均显示，确认文案"停用后创建人无法自行启用"；"全部调用日志"抽屉打开时请求 `auditApi.capabilities()`（`GET /audit/capabilities`，`skipErrorToast`，不重试），仅 `can_view_unknown_calls===true` 才显示开关并可传 `include_unknown`，失败/false 均不显示、不传；按单个密钥打开的抽屉不请求也不显示。③FE-21 错误码表 503001 改"依赖服务暂不可用，请稍后重试"、500000 改"系统繁忙，请稍后重试"，与 5.0 逐项核对 10 个开放接口错误码；403604/403605 属管理类接口错误码，按 5.0 不在 API 文档页展示（单测断言不含）。

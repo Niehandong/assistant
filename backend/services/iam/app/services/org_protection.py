@@ -24,6 +24,8 @@ from platform_common.errors import BizError
 
 GROUP_PROTECTED = (400114, "集团节点不能移动、停用或删除")
 ROOT_PROTECTED = (403102, "不能停用/删除自己管辖范围的根组织，请联系上级管理员")
+MOVE_ROOT_PROTECTED = (403101, "不能调整自己管辖范围根组织的上级，请联系上级管理员")
+MOVE_PARENT_UNMANAGEABLE = (403104, "当前上级组织不在您的管理范围内，不能移动该组织")
 OWN_CHAIN_PROTECTED = (403103, "不能停用本人所在的组织及其上级组织")
 
 
@@ -53,6 +55,25 @@ class OrgProtection:
         if not self.unrestricted and org.id in self.roots:
             return ROOT_PROTECTED
         return None
+
+    def move_error(self, org: SysOrg, parent_manageable: bool) -> tuple[int, str] | None:
+        """移动保护 M1~M3：集团 400114 → 管辖根且上级不可管理 403101 → 上级不可管理 403104。"""
+        if org.org_type == OrgType.GROUP:
+            return GROUP_PROTECTED
+        if parent_manageable:
+            return None
+        if not self.unrestricted and org.id in self.roots:
+            return MOVE_ROOT_PROTECTED
+        return MOVE_PARENT_UNMANAGEABLE
+
+    def move_blocked_reason(self, org: SysOrg, parent_manageable: bool) -> str | None:
+        err = self.move_error(org, parent_manageable)
+        return err[1] if err else None
+
+    def check_move(self, org: SysOrg, parent_manageable: bool) -> None:
+        err = self.move_error(org, parent_manageable)
+        if err is not None:
+            raise BizError(*err)
 
     def check_disable(self, org: SysOrg) -> None:
         err = self.disable_error(org)

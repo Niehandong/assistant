@@ -75,8 +75,8 @@ export const ORG_TYPE_LABEL: Record<OrgType, string> = {
 };
 
 /**
- * 停用/删除不可用的提示文案：直接使用 5.2.1 返回的 `*_blocked_reason`（null 表示可操作）；
- * 集团节点即使后端未给出文案也不可停用/删除（400114）。已停用节点“启用”不受保护。
+ * 停用/删除/移动不可用的提示文案：直接使用 5.2.1 返回的 `*_blocked_reason`（null 表示可操作）；
+ * 集团节点即使后端未给出文案也不可移动/停用/删除（400114）。已停用节点“启用”不受保护。
  */
 export function getBlockedReason(
   node: {
@@ -84,14 +84,16 @@ export function getBlockedReason(
     status: 'enabled' | 'disabled';
     disable_blocked_reason?: string | null;
     delete_blocked_reason?: string | null;
+    move_blocked_reason?: string | null;
   },
-  action: 'disable' | 'delete',
+  action: 'disable' | 'delete' | 'move',
 ): string | null {
   const fallback = node.org_type === 'group' ? '集团节点不能移动、停用或删除' : null;
   if (action === 'disable') {
     if (node.status === 'disabled') return null;
     return node.disable_blocked_reason ?? fallback;
   }
+  if (action === 'move') return node.move_blocked_reason ?? fallback;
   return node.delete_blocked_reason ?? fallback;
 }
 

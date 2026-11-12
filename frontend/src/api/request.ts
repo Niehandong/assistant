@@ -48,6 +48,19 @@ function toApiError(err: unknown): ApiError {
   return new ApiError(NETWORK_ERROR_CODE, err instanceof Error ? err.message : '未知错误');
 }
 
+/**
+ * responseType=blob 的请求出错时，响应体是 Blob：按文本解析为统一 JSON 后回填 response.data，
+ * 以便 toApiError 取到 message；解析失败保持原样（回退通用提示）。
+ */
+export async function parseBlobErrorBody(err: unknown): Promise<void> {
+  if (!(err instanceof AxiosError) || !(err.response?.data instanceof Blob)) return;
+  try {
+    err.response.data = JSON.parse(await err.response.data.text());
+  } catch {
+    // 非 JSON 响应体
+  }
+}
+
 // ---------- single-flight 刷新 ----------
 let refreshing: Promise<string> | null = null;
 
@@ -136,6 +149,7 @@ client.interceptors.response.use(
     return res;
   },
   async (error: unknown) => {
+    await parseBlobErrorBody(error);
     const config = error instanceof AxiosError ? error.config : undefined;
     const apiErr = toApiError(error);
     if (apiErr.code === NETWORK_ERROR_CODE && !config?.skipErrorToast) {
