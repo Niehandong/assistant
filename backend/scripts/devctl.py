@@ -288,7 +288,35 @@ async def run_foreground(services: list[Service], env: dict[str, str]) -> int:
     return 0
 
 
+def compose_app_containers() -> list[str]:
+    """返回正在运行的 compose 应用容器（iam/kb/kb-worker/open/web，带 label kbp.local-app=true）。
+
+    docker 不可用或命令失败时返回空列表（视为没有容器，不阻塞本机开发）。
+    """
+    try:
+        out = subprocess.run(
+            ["docker", "ps", "--filter", "label=kbp.local-app=true", "--format", "{{.Names}}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if out.returncode != 0:
+        return []
+    return [n for n in out.stdout.split() if n]
+
+
 def cmd_up(args: argparse.Namespace) -> int:
+    if args.env is None and (running := compose_app_containers()):
+        print(
+            f"检测到 docker compose 应用容器正在运行: {', '.join(running)}\n"
+            "本机 devctl 与容器版 kb-worker 会同时消费同一个 Redis Stream，已拒绝启动。请先停止容器：\n"
+            "    docker compose stop iam kb kb-worker open web\n"
+            "（中间件保留；如需只起中间件：docker compose up -d postgres redis minio）",
+            file=sys.stderr,
+        )
+        return 1
     services = select_services(args.svc)
     missing = [s.name for s in services if not svc_exists(s)]
     if missing:

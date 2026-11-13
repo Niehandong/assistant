@@ -18,7 +18,9 @@ model: sonnet
 ## 环境约定（重要）
 - **不使用 uv / poetry**。Python 环境是仓库根目录的 `.venv`（所有服务共用）。在服务目录 `backend/services/<服务>/` 下执行时使用 `../../../.venv/bin/python`；在 `backend/` 下执行时使用 `../.venv/bin/python`。
 - 新增依赖：写入 `backend/requirements.txt` 或 `requirements-dev.txt`，**固定版本号**，然后 `pip install -r`。共享库修改后无需重装（可编辑安装）。
-- 中间件：`docker compose up -d`（PostgreSQL+pgvector、Redis、MinIO），先确认容器在运行。
+- 中间件：`docker compose up -d postgres redis minio`（根目录 `docker compose up -d` 会起全栈应用容器）。
+- **验证方式二选一，不能同时开**：① 本机 devctl（需先 `docker compose stop iam kb kb-worker open web`，devctl 检测到应用容器会拒绝启动；验证完如原本在运行，用 `docker compose start iam kb kb-worker open web` 恢复）；② 容器（改了后端代码须 `docker compose up -d --build <服务>` 重建，否则容器里是旧代码）。
+- 恢复 admin 密码用 `POST /api/v1/system/users/1/reset-password`，请求体字段是 **`password`**（写错会被忽略并生成随机密码）；禁止直接改库。
 - 启动：单服务 `cd backend/services/<服务> && ../../../.venv/bin/python main.py`；联调用 `.venv/bin/python backend/scripts/devctl.py up -d <服务...>`，**没有热加载**。修改后先 `devctl.py down` 再启动。**严禁按端口查找并终止进程**——本机有其他项目的服务，只能停止本项目启动的进程。验证完毕停止你启动的进程，不要留后台进程。
 - 配置项定义在服务的 `app/core/config.py`（继承共享库 `BaseServiceSettings`，带本地默认值），新增配置同步更新该服务的 `.env.example`。
 - 共享库 `platform_common` 是所有服务的基础，修改其公开接口（函数签名、AuthContext 字段、错误码）属于契约变更，必须先提"契约变更申请"。

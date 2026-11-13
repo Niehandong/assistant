@@ -1,5 +1,38 @@
-# 本地中间件：PostgreSQL 16(+pgvector) + Redis 7 + MinIO。
-# 宿主机端口为本项目专属（避免与本机其他项目冲突）；桶由 devctl.py init 创建。前后端不进容器。
+# 本地一键全栈：PostgreSQL 16(+pgvector) + Redis 7 + MinIO + 一次性初始化/迁移 + iam / kb / kb-worker / open + 前端 Nginx。
+#   docker compose up -d                      # 首次会构建镜像；浏览器访问 http://localhost:${WEB_PORT:-8300}
+#   docker compose up -d postgres redis minio # 只起中间件（配合 devctl.py 本机开发；此时不要同时跑应用容器）
+# 中间件容器名、宿主机端口与 ./.docker-data 数据目录保持不变，开发库 kbp 的数据沿用。
+# 应用容器使用 APP_ENV=dev 与各服务的开发默认密钥（MODEL_SECRET_KEY 等，库里已加密数据依赖它），仅限本机；生产见 deploy/。
+# 只有前端 Nginx 映射宿主机端口（默认 8300）；iam/kb/open 不映射，避免与 devctl 的 8301~8303 冲突。
+
+x-app-common: &app-common
+  restart: unless-stopped
+  networks: [kbp]
+  labels:
+    kbp.local-app: "true"  # devctl.py up 据此检测应用容器是否在运行（两套 worker 不能同时消费同一 Redis Stream）
+
+x-app-env: &app-env
+  APP_ENV: dev
+  HOST: 0.0.0.0
+  DATABASE_URL: postgresql+asyncpg://kbp:kbp@postgres:5432/kbp
+  REDIS_URL: redis://redis:6379/0
+  JWT_PUBLIC_KEY_FILE: /run/jwt/jwt_public.pem
+  IAM_INTERNAL_URL: http://iam:8301
+  KB_INTERNAL_URL: http://kb:8302
+  OPEN_INTERNAL_URL: http://open:8303
+  # 只信任固定 IP 的前端 Nginx 容器；不包含 127.0.0.1、宿主机网段（防止伪造 X-Forwarded-For）
+  TRUSTED_PROXIES: '["172.31.78.10/32"]'
+
+x-kb-env: &kb-env
+  <<: *app-env
+  S3_ENDPOINT: http://minio:9000
+  S3_ACCESS_KEY: minioadmin
+  S3_SECRET_KEY: minioadmin
+  S3_BUCKET: kbp-files
+
+x-jwt-public: &jwt-public
+  - ./backend/.secrets/jwt_public.pem:/run/jwt/jwt_public.pem:ro
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -48,6 +81,7 @@ services:
       timeout: 3s
       retries: 20
     restart: unless-stopped
+    networks: [kbp]
 
   redis:
     image: redis:7-alpine
@@ -63,6 +97,7 @@ services:
       timeout: 3s
       retries: 20
     restart: unless-stopped
+    networks: [kbp]
 
   minio:
     image: minio/minio
@@ -82,3 +117,177 @@ services:
       timeout: 3s
       retries: 20
     restart: unless-stopped
+    networks: [kbp]
+
+  # ---------------------------------------------------------------- 一次性任务：密钥 / 建桶 / 迁移（均幂等）
+  # 以 root 运行：需要写入宿主机 backend/.secrets，并让容器内 uid 10001 的服务可读（开发密钥，权限放宽为 644）。
+  init:
+    image: kbp-kb:local
+    pull_policy: never   # 由同名镜像的 build 服务构建，不从仓库拉取
+    user: "0:0"
+    restart: "no"
+    networks: [kbp]
+    command:
+      - python
+      - -c
+      - |
+        import os
+        from pathlib import Path
+        import boto3
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        d = Path("/secrets")
+        priv, pub = d / "jwt_private.pem", d / "jwt_public.pem"
+        if priv.exists():
+            key = serialization.load_pem_private_key(priv.read_bytes(), password=None)
+        else:
+            key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            priv.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+            print("generated", priv)
+        if not pub.exists():
+            pub.write_bytes(key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
+            print("generated", pub)
+        st = d.stat()
+        for f in (priv, pub):
+            f.chmod(0o644)
+            os.chown(f, st.st_uid, st.st_gid)
+        print("jwt keys ok")
+
+        c = boto3.client("s3", endpoint_url=os.environ["S3_ENDPOINT"], aws_access_key_id=os.environ["S3_ACCESS_KEY"],
+                         aws_secret_access_key=os.environ["S3_SECRET_KEY"], region_name="us-east-1")
+        names = {b["Name"] for b in c.list_buckets()["Buckets"]}
+        for b in (os.environ["S3_BUCKET"], "kbp-test"):
+            if b not in names:
+                c.create_bucket(Bucket=b)
+            print("bucket ok:", b)
+    environment: *kb-env
+    volumes:
+      - ./backend/.secrets:/secrets
+    depends_on:
+      minio: {condition: service_healthy}
+    healthcheck: {disable: true}
+
+  iam-migrate:
+    image: kbp-iam:local
+    build: {context: ./backend, args: {SERVICE: iam}}
+    pull_policy: build
+    restart: "no"
+    networks: [kbp]
+    command: ["sh", "-c", "alembic upgrade head && python -m app.seed"]
+    environment: *app-env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      init: {condition: service_completed_successfully}
+    healthcheck: {disable: true}
+
+  kb-migrate:
+    image: kbp-kb:local
+    build: {context: ./backend, args: {SERVICE: kb}}
+    pull_policy: build
+    restart: "no"
+    networks: [kbp]
+    command: ["alembic", "upgrade", "head"]
+    environment: *kb-env
+    depends_on:
+      iam-migrate: {condition: service_completed_successfully}
+    healthcheck: {disable: true}
+
+  open-migrate:
+    image: kbp-open:local
+    build: {context: ./backend, args: {SERVICE: open}}
+    pull_policy: build
+    restart: "no"
+    networks: [kbp]
+    command: ["alembic", "upgrade", "head"]
+    environment: *app-env
+    depends_on:
+      kb-migrate: {condition: service_completed_successfully}
+    healthcheck: {disable: true}
+
+  # ---------------------------------------------------------------- 业务服务
+  iam:
+    <<: *app-common
+    image: kbp-iam:local
+    pull_policy: never   # 由同名镜像的 build 服务构建，不从仓库拉取
+    environment:
+      <<: *app-env
+      JWT_PRIVATE_KEY_FILE: /run/jwt/jwt_private.pem
+      KB_STATS_ENABLED: "true"
+      OPEN_STATS_ENABLED: "true"
+    volumes:
+      - ./backend/.secrets/jwt_public.pem:/run/jwt/jwt_public.pem:ro
+      - ./backend/.secrets/jwt_private.pem:/run/jwt/jwt_private.pem:ro
+    healthcheck: &app-health
+      interval: 5s
+      start_period: 30s
+    depends_on:
+      open-migrate: {condition: service_completed_successfully}
+
+  kb:
+    <<: *app-common
+    image: kbp-kb:local
+    pull_policy: never   # 由同名镜像的 build 服务构建，不从仓库拉取
+    environment: *kb-env
+    volumes: *jwt-public
+    healthcheck: *app-health
+    depends_on:
+      open-migrate: {condition: service_completed_successfully}
+      iam: {condition: service_healthy}
+
+  # 文档处理 / HNSW 建索引 worker
+  kb-worker:
+    <<: *app-common
+    image: kbp-kb:local
+    pull_policy: never   # 由同名镜像的 build 服务构建，不从仓库拉取
+    command: ["python", "worker.py"]
+    environment: *kb-env
+    volumes: *jwt-public
+    healthcheck: {disable: true}  # worker 无 HTTP 端口
+    depends_on:
+      open-migrate: {condition: service_completed_successfully}
+      iam: {condition: service_healthy}
+
+  open:
+    <<: *app-common
+    image: kbp-open:local
+    pull_policy: never   # 由同名镜像的 build 服务构建，不从仓库拉取
+    environment:
+      <<: *app-env
+      KB_RETRIEVAL_URL: http://kb:8302
+    volumes: *jwt-public
+    healthcheck: *app-health
+    depends_on:
+      open-migrate: {condition: service_completed_successfully}
+      iam: {condition: service_healthy}
+
+  web:
+    <<: *app-common
+    image: kbp-frontend:local
+    build: {context: ./frontend}
+    pull_policy: build
+    environment:
+      IAM_UPSTREAM: iam:8301
+      KB_UPSTREAM: kb:8302
+      OPEN_UPSTREAM: open:8303
+    ports:
+      - "${WEB_PORT:-8300}:80"
+    networks:
+      kbp:
+        ipv4_address: 172.31.78.10
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on:
+      iam: {condition: service_healthy}
+      kb: {condition: service_healthy}
+      open: {condition: service_healthy}
+
+networks:
+  kbp:
+    ipam:
+      config:
+        - subnet: 172.31.78.0/24

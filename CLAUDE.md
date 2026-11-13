@@ -15,7 +15,7 @@
 .
 ├── CLAUDE.md                 # 本文件
 ├── .venv/                    # 全项目唯一的 Python 虚拟环境（所有后端服务共用，不进 git）
-├── docker-compose.yml        # 本地中间件：PostgreSQL 16(+pgvector) + Redis 7 + MinIO
+├── docker-compose.yml        # 本地一键全栈：中间件 + init/迁移 + iam/kb/kb-worker/open + 前端 Nginx（:8300）
 ├── deploy/                   # 生产部署 docker-compose.prod.yml、.env.prod.example；local/ 本地 PG 初始化脚本
 ├── frontend/                 # React + Ant Design（单一 SPA）
 ├── backend/
@@ -76,9 +76,9 @@
 - 测试：pytest + pytest-asyncio + httpx（AsyncClient）
 
 ### 中间件与部署
-- 本地：`docker compose` 只起中间件 —— **PostgreSQL 16（镜像 pgvector/pgvector:pg16）+ Redis 7 + MinIO**
+- 本地：根目录 `docker compose up -d` **一键起全栈**（PostgreSQL 16（pgvector/pgvector:pg16）+ Redis 7 + MinIO + 一次性 init/迁移 + iam/kb/kb-worker/open + 前端 Nginx，访问 http://localhost:8300）；只起中间件用 `docker compose up -d postgres redis minio`
 - 向量检索用 pgvector，全文检索用 PostgreSQL tsvector + jieba 分词，异步任务与服务间事件用 Redis Streams；引入其他中间件须在 tech-design 中论证
-- 前后端本地开发**不进容器**
+- 本机开发调试仍可不进容器（devctl + pnpm dev），但**与全栈应用容器互斥**（两套 kb-worker 会消费同一 Redis Stream）：devctl 检测到应用容器运行会拒绝启动，需先 `docker compose stop iam kb kb-worker open web`
 - 生产：Docker 部署；每个后端服务一个镜像（`backend/Dockerfile` + `SERVICE` 构建参数），前端为 Nginx 镜像（静态资源 + 反向代理）
 
 ## 4. 后端规范
@@ -92,7 +92,7 @@
   ```
   kb 服务另有 `worker.py`（文档处理进程，同样 `python worker.py` 启动）。
 - 启动单个服务：`cd backend/services/<服务> && ../../../.venv/bin/python main.py`；一键启动全部：`.venv/bin/python backend/scripts/devctl.py up`。**不开热加载**，修改后必须**重启进程**再验证（`devctl.py down` / `up`）。
-- 端口（本机多项目共用，统一使用专属端口）：iam 8301、kb 8302、open 8303、chat 8304（预留）；宿主机中间件 PostgreSQL 15432、Redis 16379、MinIO 19000（API）/19001（控制台）；前端 dev 5174。容器内端口不变，生产部署不受影响。
+- 端口（本机多项目共用，统一使用专属端口）：iam 8301、kb 8302、open 8303、chat 8304（预留）；宿主机中间件 PostgreSQL 15432、Redis 16379、MinIO 19000（API）/19001（控制台）；前端 dev 5174；本地全栈前端 8300（仅 web 映射宿主机，iam/kb/open 不映射）。本地 compose 网络固定子网 `172.31.78.0/24`（Nginx `172.31.78.10`，`TRUSTED_PROXIES` 只含它），生产为 `172.31.77.0/24`，新网段须避开 `docker network ls` 已用网段。容器内端口不变，生产部署不受影响。
 - **严禁按端口杀进程**：停止服务只能针对本项目启动的进程（`devctl.py` 记录的 PID 或 cwd 位于 `backend/services/` 下的进程），不得终止其他项目的进程。
 - 配置：共享库提供 `BaseServiceSettings`，各服务在 `app/core/config.py` 继承扩展；**所有配置项带本地开发默认值**，可被 `backend/services/<服务>/.env` 或环境变量覆盖。`.env` 不进 git，`.env.example` 进 git，新增配置项必须同步。
 - 共享库以可编辑方式安装：`.venv/bin/pip install -e backend/libs/platform_common`。
@@ -228,8 +228,12 @@ frontend/src/
 ## 9. 常用命令
 
 ```bash
-# 中间件
+# 本地一键全栈（首次自动构建；访问 http://localhost:8300，admin / Admin12345 首次强制改密）
 docker compose up -d
+docker compose up -d --build                # 改代码后重建（也可只重建某服务：up -d --build kb kb-worker）
+docker compose logs -f kb-worker
+docker compose stop                          # 停止（down 删除容器，数据保留；勿加 -v）
+docker compose up -d postgres redis minio    # 只起中间件（本机 devctl 开发时）
 
 # 后端环境（首次）
 python3.12 -m venv .venv

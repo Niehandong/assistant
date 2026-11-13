@@ -1,5 +1,7 @@
 # 生产部署说明
 
+> 本地开发环境的一键全栈运行（根目录 `docker compose up -d`）见仓库根目录 `README.md`；本文只讲生产编排。
+
 编排文件：`deploy/docker-compose.prod.yml`；变量模板：`deploy/.env.prod.example`（复制为 `deploy/.env.prod`，不进 git）。
 
 ## 组成
