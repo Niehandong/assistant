@@ -1,7 +1,8 @@
 # 生产编排：nginx(前端) + iam + kb + kb-worker + open + PostgreSQL + Redis + MinIO，以及一次性迁移任务。
-# 用法（在仓库根目录）：
-#   docker compose -p kbp-prod --env-file deploy/.env.prod -f deploy/docker-compose.prod.yml up -d --build
-# 变量说明见 deploy/.env.prod.example；部署说明见 deploy/README.md。
+# 用法（在 docker/ 目录下；项目名由下面的 name 固定为 kbp-prod）：
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+# 变量说明见 .env.prod.example；部署说明见 README.md。
+# 全部持久化数据（PostgreSQL / Redis / MinIO）以 bind mount 放在 ${KBP_DATA_DIR:-./data/prod}，与本地开发数据（./data/postgres 等）互不干扰。
 # 除 nginx 外不向宿主机映射任何端口；内部接口 /internal/ 仅在 compose 网络内可达。
 
 name: kbp-prod
@@ -42,7 +43,7 @@ services:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
     networks: [kbp]
-    # 参数默认值为 16 核 / 64GB 专用 DB 主机（tech-design-m2 3.10.3 生产列，样例见 deploy/prod/postgres-params.example.conf），
+    # 参数默认值为 16 核 / 64GB 专用 DB 主机（tech-design-m2 3.10.3 生产列，样例见 postgres/prod/postgres-params.example.conf），
     # 按实际内存比例在 .env.prod 中覆盖（README 有换算方法）。shm_size 须 >= maintenance_work_mem（HNSW 并行构建用共享内存）。
     shm_size: ${PG_SHM_SIZE:-16gb}
     command:
@@ -79,8 +80,8 @@ services:
       KB_DB_PASSWORD: ${KB_DB_PASSWORD:?必须设置 KB_DB_PASSWORD}
       OPEN_DB_PASSWORD: ${OPEN_DB_PASSWORD:?必须设置 OPEN_DB_PASSWORD}
     volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./prod/initdb/00-init-roles.sh:/docker-entrypoint-initdb.d/00-init-roles.sh:ro
+      - ${KBP_DATA_DIR:-./data/prod}/postgres:/var/lib/postgresql/data
+      - ./postgres/prod/00-init-roles.sh:/docker-entrypoint-initdb.d/00-init-roles.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kbp_admin} -d kbp"]
       interval: 5s
@@ -93,7 +94,7 @@ services:
     networks: [kbp]
     command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?必须设置 REDIS_PASSWORD}"]
     volumes:
-      - redisdata:/data
+      - ${KBP_DATA_DIR:-./data/prod}/redis:/data
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
       interval: 5s
@@ -111,7 +112,7 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?必须设置 MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?必须设置 MINIO_ROOT_PASSWORD}
     volumes:
-      - miniodata:/data
+      - ${KBP_DATA_DIR:-./data/prod}/minio:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 5s
@@ -121,7 +122,7 @@ services:
   # ---------------------------------------------------------------- 一次性任务：迁移 / 建桶
   iam-migrate:
     image: kbp-iam:${KBP_VERSION:-dev}
-    build: {context: ../backend, args: {SERVICE: iam}}
+    build: {context: ../backend, dockerfile: ../docker/backend/Dockerfile, args: {SERVICE: iam}}
     restart: "no"
     networks: [kbp]
     command: ["sh", "-c", "alembic upgrade head && python -m app.seed"]
@@ -136,7 +137,7 @@ services:
 
   kb-migrate:
     image: kbp-kb:${KBP_VERSION:-dev}
-    build: {context: ../backend, args: {SERVICE: kb}}
+    build: {context: ../backend, dockerfile: ../docker/backend/Dockerfile, args: {SERVICE: kb}}
     restart: "no"
     networks: [kbp]
     command: ["alembic", "upgrade", "head"]  # 以 kbp_kb 账号执行，保证 kb 表的 owner 为 kbp_kb
@@ -147,7 +148,7 @@ services:
 
   open-migrate:
     image: kbp-open:${KBP_VERSION:-dev}
-    build: {context: ../backend, args: {SERVICE: open}}
+    build: {context: ../backend, dockerfile: ../docker/backend/Dockerfile, args: {SERVICE: open}}
     restart: "no"
     networks: [kbp]
     command: ["alembic", "upgrade", "head"]
@@ -184,7 +185,7 @@ services:
   iam:
     <<: *backend-common
     image: kbp-iam:${KBP_VERSION:-dev}
-    build: {context: ../backend, args: {SERVICE: iam}}
+    build: {context: ../backend, dockerfile: ../docker/backend/Dockerfile, args: {SERVICE: iam}}
     environment:
       <<: *backend-env
       DATABASE_URL: postgresql+asyncpg://kbp_iam:${IAM_DB_PASSWORD}@postgres:5432/kbp
@@ -201,7 +202,7 @@ services:
   kb:
     <<: *backend-common
     image: kbp-kb:${KBP_VERSION:-dev}
-    build: {context: ../backend, args: {SERVICE: kb}}
+    build: {context: ../backend, dockerfile: ../docker/backend/Dockerfile, args: {SERVICE: kb}}
     environment: *kb-env
     volumes: *jwt-public
     depends_on:
@@ -227,7 +228,7 @@ services:
   open:
     <<: *backend-common
     image: kbp-open:${KBP_VERSION:-dev}
-    build: {context: ../backend, args: {SERVICE: open}}
+    build: {context: ../backend, dockerfile: ../docker/backend/Dockerfile, args: {SERVICE: open}}
     environment:
       <<: *backend-env
       DATABASE_URL: postgresql+asyncpg://kbp_open:${OPEN_DB_PASSWORD}@postgres:5432/kbp
@@ -241,7 +242,11 @@ services:
 
   nginx:
     image: kbp-frontend:${KBP_VERSION:-dev}
-    build: {context: ../frontend}
+    build:
+      context: ../frontend
+      dockerfile: ../docker/frontend/Dockerfile
+      additional_contexts:
+        nginxconf: ./frontend/nginx
     restart: unless-stopped
     environment:
       IAM_UPSTREAM: iam:8301
@@ -262,8 +267,3 @@ networks:
     ipam:
       config:
         - subnet: ${KBP_SUBNET:-172.31.77.0/24}
-
-volumes:
-  pgdata:
-  redisdata:
-  miniodata:

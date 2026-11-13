@@ -15,13 +15,12 @@
 .
 ├── CLAUDE.md                 # 本文件
 ├── .venv/                    # 全项目唯一的 Python 虚拟环境（所有后端服务共用，不进 git）
-├── docker-compose.yml        # 本地一键全栈：中间件 + init/迁移 + iam/kb/kb-worker/open + 前端 Nginx（:8300）
-├── deploy/                   # 生产部署 docker-compose.prod.yml、.env.prod.example；local/ 本地 PG 初始化脚本
+├── docker/                   # 所有 Docker 相关：docker-compose.yml（本地一键全栈 :8300）、docker-compose.prod.yml、.env.prod.example、
+│                             #   backend/ frontend/（Dockerfile、nginx 模板）、postgres/（初始化脚本、PG 参数）、data/（容器数据，不进 git）、README.md
 ├── frontend/                 # React + Ant Design（单一 SPA）
 ├── backend/
 │   ├── requirements.txt / requirements-dev.txt   # 所有服务共用，版本固定
 │   ├── pyproject.toml        # 仅 ruff / mypy / pytest 配置
-│   ├── Dockerfile            # 构建参数 SERVICE 选择服务
 │   ├── scripts/devctl.py     # 本地一键 init / migrate / up / down / status
 │   ├── libs/platform_common/ # 共享库：配置基类、DB、Redis、错误、响应、鉴权、数据权限、事件、操作日志
 │   └── services/
@@ -45,7 +44,7 @@
 | `product-manager` | `docs/` | 写技术方案（表结构、接口、选型）、改代码 |
 | `architect` | `docs/` | 改业务代码、改测试代码 |
 | `frontend-dev` | `frontend/`、需求目录下的实现说明 | 改后端、私自改接口契约 |
-| `backend-dev` | `backend/`、`docker-compose.yml`、`deploy/`、需求目录下的实现说明 | 改前端、私自改接口契约、跨服务 import 业务代码 |
+| `backend-dev` | `backend/`、`docker/`、需求目录下的实现说明 | 改前端、私自改接口契约、跨服务 import 业务代码 |
 | `qa-tester` | `backend/services/*/tests/integration/`、`backend/tests_e2e_api/`、`frontend/e2e/`、`test-report.md` | 改业务代码（只报缺陷） |
 
 通用规则：
@@ -76,10 +75,10 @@
 - 测试：pytest + pytest-asyncio + httpx（AsyncClient）
 
 ### 中间件与部署
-- 本地：根目录 `docker compose up -d` **一键起全栈**（PostgreSQL 16（pgvector/pgvector:pg16）+ Redis 7 + MinIO + 一次性 init/迁移 + iam/kb/kb-worker/open + 前端 Nginx，访问 http://localhost:8300）；只起中间件用 `docker compose up -d postgres redis minio`
+- 本地：`cd docker && docker compose up -d` **一键起全栈**（PostgreSQL 16（pgvector/pgvector:pg16）+ Redis 7 + MinIO + 一次性 init/迁移 + iam/kb/kb-worker/open + 前端 Nginx，访问 http://localhost:8300）；只起中间件用 `docker compose up -d postgres redis minio`
 - 向量检索用 pgvector，全文检索用 PostgreSQL tsvector + jieba 分词，异步任务与服务间事件用 Redis Streams；引入其他中间件须在 tech-design 中论证
-- 本机开发调试仍可不进容器（devctl + pnpm dev），但**与全栈应用容器互斥**（两套 kb-worker 会消费同一 Redis Stream）：devctl 检测到应用容器运行会拒绝启动，需先 `docker compose stop iam kb kb-worker open web`
-- 生产：Docker 部署；每个后端服务一个镜像（`backend/Dockerfile` + `SERVICE` 构建参数），前端为 Nginx 镜像（静态资源 + 反向代理）
+- 本机开发调试仍可不进容器（devctl + pnpm dev），但**与全栈应用容器互斥**（两套 kb-worker 会消费同一 Redis Stream）：devctl 检测到应用容器运行会拒绝启动，需先 `cd docker && docker compose stop iam kb kb-worker open web`
+- 生产：Docker 部署；每个后端服务一个镜像（`docker/backend/Dockerfile` + `SERVICE` 构建参数，构建上下文 `backend/`），前端为 Nginx 镜像（静态资源 + 反向代理）
 
 ## 4. 后端规范
 
@@ -228,12 +227,14 @@ frontend/src/
 ## 9. 常用命令
 
 ```bash
-# 本地一键全栈（首次自动构建；访问 http://localhost:8300，admin / Admin12345 首次强制改密）
+# 本地一键全栈（在 docker/ 目录执行；首次自动构建；访问 http://localhost:8300，admin / Admin12345 首次强制改密）
+cd docker
 docker compose up -d
 docker compose up -d --build                # 改代码后重建（也可只重建某服务：up -d --build kb kb-worker）
 docker compose logs -f kb-worker
 docker compose stop                          # 停止（down 删除容器，数据保留；勿加 -v）
 docker compose up -d postgres redis minio    # 只起中间件（本机 devctl 开发时）
+# devctl 运行产物：backend/.run（pid）、backend/logs（日志）；容器数据：docker/data
 
 # 后端环境（首次）
 python3.12 -m venv .venv

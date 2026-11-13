@@ -41,9 +41,9 @@ frontend/test-results/
 frontend/blob-report/
 
 # ===== 本地数据 / 日志 =====
-.run/
-.docker-data/
-logs/
+backend/.run/
+backend/logs/
+docker/data/
 *.log
 
 # ===== 编辑器 / 系统 =====
@@ -53,5 +53,5 @@ logs/
 .claude/settings.local.json
 
 # ===== 生产部署环境变量（只提交 .env.prod.example）=====
-deploy/.env.prod
-deploy/.env.prod.local
+docker/.env.prod
+docker/.env.prod.local

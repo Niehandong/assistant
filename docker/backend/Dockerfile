@@ -1,6 +1,8 @@
 # 后端生产镜像（iam / kb / open 共用，按 SERVICE 构建；kb-worker 使用 kb 镜像并覆盖 command）
-# 构建（上下文为 backend/）：docker build --build-arg SERVICE=iam -t kbp-iam:<ver> backend
-# 运行：监听地址、端口、数据库等全部由环境变量注入（见 deploy/.env.prod.example），镜像内不含任何密钥。
+# 构建（上下文为 backend/，在仓库根目录执行）：
+#   docker build -f docker/backend/Dockerfile --build-arg SERVICE=iam -t kbp-iam:<ver> backend
+# 忽略规则见同目录 Dockerfile.dockerignore（BuildKit 的 Dockerfile 专属 ignore，相对上下文 backend/）。
+# 运行：监听地址、端口、数据库等全部由环境变量注入（见 docker/.env.prod.example），镜像内不含任何密钥。
 
 # ---------- 构建阶段：安装依赖到独立 venv ----------
 FROM python:3.12-slim AS builder

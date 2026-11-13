@@ -30,8 +30,8 @@ REPO = Path(__file__).resolve().parents[2]
 BACKEND = REPO / "backend"
 SERVICES_DIR = BACKEND / "services"
 SECRETS_DIR = BACKEND / ".secrets"
-RUN_DIR = REPO / ".run"
-LOG_DIR = REPO / "logs"
+RUN_DIR = BACKEND / ".run"
+LOG_DIR = BACKEND / "logs"
 PYTHON = REPO / ".venv" / "bin" / "python"
 ALEMBIC = REPO / ".venv" / "bin" / "alembic"
 
@@ -112,7 +112,7 @@ def ensure_buckets() -> int:
                 client.create_bucket(Bucket=name)
                 print(f"已创建桶: {name}")
     except (BotoCoreError, ClientError) as exc:
-        print(f"创建桶失败（请先 docker compose up -d）: {exc}", file=sys.stderr)
+        print(f"创建桶失败（请先 cd docker && docker compose up -d postgres redis minio）: {exc}", file=sys.stderr)
         return 1
     return 0
 
@@ -170,7 +170,7 @@ def cmd_migrate(args: argparse.Namespace) -> int:
 
 # ---------------------------------------------------------------- up
 def run_dir(env_name: str | None = None) -> Path:
-    """pid 文件目录：dev 为 ``.run/``，test 为 ``.run/test/``（两套环境互不干扰）。"""
+    """pid 文件目录：dev 为 ``backend/.run/``，test 为 ``backend/.run/test/``（两套环境互不干扰）。"""
     return RUN_DIR / env_name if env_name else RUN_DIR
 
 
@@ -312,8 +312,8 @@ def cmd_up(args: argparse.Namespace) -> int:
         print(
             f"检测到 docker compose 应用容器正在运行: {', '.join(running)}\n"
             "本机 devctl 与容器版 kb-worker 会同时消费同一个 Redis Stream，已拒绝启动。请先停止容器：\n"
-            "    docker compose stop iam kb kb-worker open web\n"
-            "（中间件保留；如需只起中间件：docker compose up -d postgres redis minio）",
+            "    cd docker && docker compose stop iam kb kb-worker open web\n"
+            "（中间件保留；如需只起中间件：cd docker && docker compose up -d postgres redis minio）",
             file=sys.stderr,
         )
         return 1

@@ -16,7 +16,7 @@ model: sonnet
 - 使用独立测试库 `kbp_test`，不得污染开发库数据。
 
 ## 测试环境
-1. `docker compose up -d` 确认 PostgreSQL、Redis 运行；
+1. `cd docker && docker compose up -d postgres redis minio` 确认中间件运行（全栈应用容器若在运行，用 devctl 前需 `docker compose stop iam kb kb-worker open web`）；
 2. 后端：`.venv/bin/python backend/scripts/devctl.py --env test migrate`，`.venv/bin/python backend/scripts/devctl.py --env test up -d`（启动全部服务与 worker；无热加载，代码变更后要重启），结束时 `devctl.py down`；
 3. 前端：`cd frontend && pnpm dev`；
 4. 准备测试数据：至少构造 **集团 → 2 家子公司 → 各 2 个部门** 的组织结构，以及不同数据范围、不同权限码的测试用户（集团管理员、子公司 A 管理员、子公司 B 普通员工、仅本人员工、无任何权限用户）。
