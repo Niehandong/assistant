@@ -1,0 +1,85 @@
+:root {
+  --kb-ink: #1e2a32;
+  --kb-primary: #0e6e6e;
+  --kb-paper: #f5f7f6;
+  --kb-frost: #e2e7e4;
+  --kb-hit: #f2c14e;
+  --kb-font-serif: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'STSong', serif;
+}
+
+body {
+  margin: 0;
+  background: var(--kb-paper);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 数字对齐 */
+.ant-table,
+.ant-statistic,
+.ant-pagination,
+.ant-descriptions {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 页面标题与衬线标题 */
+.ant-page-header-heading-title,
+.ant-pro-page-container-warp-page-header .ant-page-header-heading-title,
+.kb-serif {
+  font-family: var(--kb-font-serif);
+  font-weight: 600;
+}
+.ant-page-header-heading-title {
+  font-size: 20px !important;
+}
+
+/* 检索命中：藤黄高亮，仅用于召回结果 */
+mark {
+  background: var(--kb-hit);
+  color: var(--kb-ink);
+  padding: 0 2px;
+  border-radius: 2px;
+}
+
+/* 顶栏（墨色）与侧栏选中态 */
+.ant-pro-layout .ant-pro-layout-header,
+.ant-pro-layout .ant-layout-header.ant-pro-layout-header,
+.ant-pro-top-nav-header {
+  background: var(--kb-ink) !important;
+  color: #fff;
+  border-block-end: 0;
+}
+.ant-pro-layout .ant-pro-top-nav-header-logo h1,
+.ant-pro-layout .ant-pro-global-header-logo h1,
+.ant-pro-top-nav-header-logo h1 {
+  color: #fff !important;
+  font-family: var(--kb-font-serif);
+  font-weight: 600;
+}
+.ant-pro-layout .ant-pro-layout-header .ant-pro-global-header-header-actions-item,
+.ant-pro-layout .ant-pro-layout-header .ant-space-item,
+.ant-pro-layout .ant-pro-layout-header .ant-pro-global-header-header-actions {
+  color: #fff;
+}
+.ant-pro-layout .ant-layout-sider {
+  background: #fff;
+}
+.ant-pro-layout .ant-menu-item-selected {
+  box-shadow: inset 3px 0 0 var(--kb-primary);
+  font-weight: 500;
+}
+.ant-pro-layout .ant-pro-layout-container,
+.ant-pro-layout .ant-pro-layout-bg-list,
+.ant-pro-layout .ant-layout-content {
+  background: var(--kb-paper);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

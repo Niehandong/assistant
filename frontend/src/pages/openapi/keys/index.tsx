@@ -241,7 +241,11 @@ export default function ApiKeysPage() {
         scroll={{ x: 1500 }}
         pagination={{ defaultPageSize: 20, showSizeChanger: false }}
         search={{ labelWidth: 'auto', defaultCollapsed: false }}
-        locale={locale ?? { emptyText: '还没有 API 密钥，点击右上角“新建密钥”创建' }}
+        locale={
+          locale ?? {
+            emptyText: '还没有 API 密钥。点击右上角“新建密钥”，创建后即可用它调用开放检索接口',
+          }
+        }
         request={wrap(async (params: Filters & { current?: number; pageSize?: number }) => {
           const res = await apiKeyApi.list({
             page: params.current ?? 1,

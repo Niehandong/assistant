@@ -3,6 +3,7 @@ import { ProLayout } from '@ant-design/pro-components';
 import { useQueryClient } from '@tanstack/react-query';
 import { Dropdown } from 'antd';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import BrandMark from '@/components/BrandMark';
 import { renderMenuIcon } from '@/components/menuIcons';
 import { useAuthStore } from '@/stores/auth';
 import { toLayoutRoutes } from '@/utils/menu';
@@ -25,7 +26,25 @@ export default function BasicLayout() {
   return (
     <ProLayout
       title="知识库平台"
-      logo={false}
+      logo={<BrandMark size={26} />}
+      token={{
+        bgLayout: '#F5F7F6',
+        header: {
+          colorBgHeader: '#1E2A32',
+          colorHeaderTitle: '#FFFFFF',
+          colorTextMenu: 'rgba(255,255,255,0.75)',
+          colorTextMenuSelected: '#FFFFFF',
+          colorTextRightActionsItem: 'rgba(255,255,255,0.85)',
+        },
+        sider: {
+          colorBgMenuItemSelected: 'rgba(14, 110, 110, 0.08)',
+          colorTextMenuSelected: '#0E6E6E',
+        },
+        pageContainer: {
+          paddingBlockPageContainerContent: 20,
+          paddingInlinePageContainerContent: 24,
+        },
+      }}
       layout="mix"
       fixSiderbar
       location={{ pathname: location.pathname }}

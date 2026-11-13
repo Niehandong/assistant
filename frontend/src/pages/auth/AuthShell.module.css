@@ -1,0 +1,106 @@
+.root {
+  min-height: 100vh;
+  display: flex;
+  background: #fff;
+}
+.brand {
+  flex: 1 1 52%;
+  background: #1e2a32;
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 64px 72px;
+  gap: 20px;
+}
+.title {
+  margin: 0;
+  font-family: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'STSong', serif;
+  font-weight: 600;
+  font-size: 30px;
+  line-height: 1.3;
+  color: #fff;
+}
+.desc {
+  margin: 0;
+  max-width: 420px;
+  font-size: 16px;
+  line-height: 1.7;
+  color: rgba(255, 255, 255, 0.78);
+}
+.panel {
+  flex: 1 1 48%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+  background: #f5f7f6;
+}
+.formBox {
+  width: 100%;
+  max-width: 360px;
+}
+.formTitle {
+  margin: 0 0 24px;
+  font-family: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'STSong', serif;
+  font-weight: 600;
+  font-size: 24px;
+  color: #1e2a32;
+}
+@media (max-width: 768px) {
+  .root {
+    flex-direction: column;
+  }
+  .brand {
+    flex: none;
+    padding: 28px 24px;
+    gap: 12px;
+  }
+  .title {
+    font-size: 24px;
+  }
+  .desc {
+    font-size: 14px;
+  }
+  .panel {
+    padding: 32px 20px;
+  }
+}
+.formBox :global(.ant-pro-form-login-container) {
+  background: transparent;
+}
+.formBox :global(.ant-pro-form-login-top) {
+  text-align: left;
+}
+.formBox :global(.ant-pro-form-login-logo) {
+  display: none;
+}
+.formBox :global(.ant-pro-form-login-title) {
+  font-family: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'STSong', serif;
+  font-weight: 600;
+  font-size: 24px;
+  color: #1e2a32;
+}
+.formBox :global(.ant-pro-form-login-desc) {
+  margin-block-start: 4px;
+  margin-block-end: 24px;
+}
+.formBox :global(.ant-pro-form-login-main),
+.formBox :global(.ant-pro-form-login-container) {
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+}
+.formBox :global(.ant-pro-form-login-main) > * {
+  max-width: 100%;
+}
+.formBox :global(.ant-pro-form-login-title),
+.formBox :global(.ant-pro-form-login-desc) {
+  text-align: left;
+  display: block;
+}
+.formBox :global(.ant-pro-form-login-header) {
+  justify-content: flex-start;
+  height: auto;
+  line-height: 1.4;
+}

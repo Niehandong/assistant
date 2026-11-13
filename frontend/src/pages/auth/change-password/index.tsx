@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { authApi } from '@/services/iam';
 import { useAuthStore } from '@/stores/auth';
 import { ApiError, getErrorMessage, getFieldErrors } from '@/utils/error';
+import AuthShell from '../AuthShell';
 import { validateNewPassword } from './rules';
 
 interface FormValues {
@@ -56,18 +57,9 @@ export default function ChangePasswordPage() {
   };
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: '#f5f7fa',
-      }}
-    >
+    <AuthShell>
       <Card
         title={forced ? '首次登录，请先修改密码' : '修改密码'}
-        style={{ width: 420 }}
         extra={
           <Button type="link" onClick={handleLogout}>
             退出登录
@@ -124,6 +116,6 @@ export default function ChangePasswordPage() {
           />
         </ProForm>
       </Card>
-    </div>
+    </AuthShell>
   );
 }

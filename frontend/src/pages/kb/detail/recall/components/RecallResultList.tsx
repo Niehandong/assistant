@@ -3,6 +3,32 @@ import { useState } from 'react';
 import type { RecallRecord, RetrievalResult } from '@/services/types/kb-contract';
 import { NO_RESULT_HINT, formatScore, highlightChildren, sortRecords } from '../logic';
 
+/** 得分条：藤黄填充表示命中强度（得分按 0~1 截断），数值用等宽数字 */
+function ScoreBar({ score }: { score: number }) {
+  const pct = Math.max(0, Math.min(1, score)) * 100;
+  return (
+    <span
+      data-testid="score-bar"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 8,
+        fontVariantNumeric: 'tabular-nums',
+      }}
+    >
+      <span>得分 {formatScore(score)}</span>
+      <span
+        aria-hidden
+        style={{ width: 56, height: 6, borderRadius: 3, background: '#E2E7E4', overflow: 'hidden' }}
+      >
+        <span
+          style={{ display: 'block', width: `${pct}%`, height: '100%', background: '#F2C14E' }}
+        />
+      </span>
+    </span>
+  );
+}
+
 function Highlighted({ record }: { record: RecallRecord }) {
   const { pieces, unmatched } = highlightChildren(record.content, record.child_chunks);
   return (
@@ -75,7 +101,7 @@ export default function RecallResultList({ result }: { result: RetrievalResult }
             title={
               <Space size={8} wrap>
                 <span>#{idx + 1}</span>
-                <Tag color="blue">得分 {formatScore(r.score)}</Tag>
+                <ScoreBar score={r.score} />
                 <Typography.Text type="secondary" style={{ fontWeight: 'normal' }}>
                   {r.document.name} · 分段 #{r.position}
                   {r.segment_type === 'parent' ? '（父块）' : ''}
@@ -96,7 +122,7 @@ export default function RecallResultList({ result }: { result: RetrievalResult }
         {detail && (
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
             <Flex gap={8} wrap="wrap">
-              <Tag color="blue">得分 {formatScore(detail.score)}</Tag>
+              <ScoreBar score={detail.score} />
               {detail.keywords.map((k) => (
                 <Tag key={k}>{k}</Tag>
               ))}

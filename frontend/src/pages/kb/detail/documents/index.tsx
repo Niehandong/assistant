@@ -366,7 +366,7 @@ export default function DocumentsPage() {
               emptyText: hasFilter
                 ? '没有符合条件的文档'
                 : canUpload
-                  ? '还没有文档，点击右上角“上传文档”开始'
+                  ? '还没有文档，点击右上角“上传文档”，选择文件后会自动解析、分段'
                   : '还没有文档',
             }}
             rowSelection={

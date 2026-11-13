@@ -100,7 +100,9 @@ export default function DatasetListPage() {
     body = filtered ? (
       <Empty description="没有符合条件的知识库" />
     ) : (
-      <Empty description="还没有可访问的知识库，创建一个开始整理你的资料吧">{createButton}</Empty>
+      <Empty description="还没有可访问的知识库。创建一个，然后上传第一份文档。">
+        {createButton}
+      </Empty>
     );
   } else if (view === 'card') {
     body = (

@@ -9,6 +9,7 @@ import { authApi } from '@/services/iam';
 import type { LoginRequest } from '@/services/types/iam-contract';
 import { useAuthStore } from '@/stores/auth';
 import { safeRedirect } from '@/utils/redirect';
+import AuthShell from '../AuthShell';
 import { getLoginErrorMessage } from './messages';
 
 export default function LoginPage() {
@@ -42,11 +43,10 @@ export default function LoginPage() {
   };
 
   return (
-    <div
-      style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', background: '#f5f7fa' }}
-    >
+    <AuthShell>
       <LoginForm<LoginRequest>
-        title="知识库平台"
+        containerStyle={{ padding: 0, minWidth: 0 }}
+        title="登录"
         subTitle="使用账号密码登录"
         onFinish={handleFinish}
         submitter={{ searchConfig: { submitText: '登录' } }}
@@ -77,6 +77,6 @@ export default function LoginPage() {
           rules={[{ required: true, message: '请输入密码' }]}
         />
       </LoginForm>
-    </div>
+    </AuthShell>
   );
 }

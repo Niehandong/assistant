@@ -16,6 +16,7 @@ import {
 import { Link, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { usePermission } from '@/access/usePermission';
 import DatasetIcon from '@/components/DatasetIcon';
+import { spineColor } from '@/components/spineColor';
 import { isApiError } from '@/utils/error';
 import { formatNumber } from '@/utils/format';
 import {
@@ -82,23 +83,38 @@ export default function DatasetLayout() {
   const hint = modelDisabledHint(data);
   const items = buildNavItems(data.my_permission, can);
   const active = activeNavKey(pathname, id);
+  const spine = spineColor(data.icon);
 
   return (
     <PageContainer title={false} breadcrumbRender={false}>
       <Flex gap={16} align="flex-start">
-        <Card style={{ width: 280, flex: 'none' }} size="small">
+        <Card
+          style={{ width: 280, flex: 'none', overflow: 'hidden' }}
+          size="small"
+          styles={{ body: { paddingTop: 16 } }}
+        >
+          <div
+            aria-hidden
+            style={{
+              height: 6,
+              background: spine,
+              margin: '-8px -12px 0',
+              position: 'relative',
+              top: -8,
+            }}
+          />
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
             {back}
             <Flex gap={8} align="center">
-              <DatasetIcon name={data.icon} style={{ fontSize: 28, color: '#1677ff' }} />
-              <strong style={{ wordBreak: 'break-all' }}>{data.name}</strong>
+              <DatasetIcon name={data.icon} style={{ fontSize: 28, color: spine }} />
+              <strong className="kb-serif" style={{ wordBreak: 'break-all', fontSize: 16 }}>
+                {data.name}
+              </strong>
             </Flex>
             {data.description && <span style={{ color: '#666' }}>{data.description}</span>}
             <Space size={[4, 4]} wrap>
-              <Tag color="blue">{PERMISSION_LABEL[data.my_permission]}</Tag>
-              <Tag color={stats.chunkModeUnset ? undefined : 'geekblue'}>
-                {stats.chunkModeUnset ? CHUNK_MODE_UNSET_TEXT : stats.chunkModeText}
-              </Tag>
+              <Tag>{PERMISSION_LABEL[data.my_permission]}</Tag>
+              <Tag>{stats.chunkModeUnset ? CHUNK_MODE_UNSET_TEXT : stats.chunkModeText}</Tag>
               <Tag>{SEARCH_METHOD_LABEL[data.search_method]}</Tag>
             </Space>
             <Descriptions column={1} size="small" colon={false}>
