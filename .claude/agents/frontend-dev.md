@@ -25,6 +25,7 @@ model: sonnet
 - 严禁 `any`（确实无法避免时注释原因）；不留 `console.log`；组件超过约 300 行时拆分。
 - 文案使用简体中文；危险操作（删除、批量操作）必须二次确认。
 - 日期用 dayjs，金额/数字格式化统一走 `src/utils/`。
+- 接口按服务分文件：`src/services/iam.ts`、`kb.ts`、`open.ts`，类型由 `pnpm gen:api` 从三个服务生成到 `src/services/types/`。新增路由前缀需同步 `vite.config.ts` 的 proxy。
 
 ## 完成标准（全部通过才算完成）
 在 `frontend/` 下执行：

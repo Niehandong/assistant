@@ -9,29 +9,32 @@
 - 标识符（变量、函数、类、表名、字段名、路由、权限码）：**英文**
 - 日志原文、命令、报错保持原样
 
-## 1. 仓库结构（monorepo）
+## 1. 仓库结构（monorepo，多服务）
 
 ```
 .
 ├── CLAUDE.md                 # 本文件
-├── .venv/                    # 全项目唯一的 Python 虚拟环境（不进 git）
-├── docker-compose.yml        # 本地中间件：PostgreSQL + Redis
-├── frontend/                 # React + Ant Design
-├── backend/                  # Python + FastAPI
+├── .venv/                    # 全项目唯一的 Python 虚拟环境（所有后端服务共用，不进 git）
+├── docker/                   # 所有 Docker 相关：docker-compose.yml（本地一键全栈 :8300）、docker-compose.prod.yml、.env.prod.example、
+│                             #   backend/ frontend/（Dockerfile、nginx 模板）、postgres/（初始化脚本、PG 参数）、data/（容器数据，不进 git）、README.md
+├── frontend/                 # React + Ant Design（单一 SPA）
+├── backend/
+│   ├── requirements.txt / requirements-dev.txt   # 所有服务共用，版本固定
+│   ├── pyproject.toml        # 仅 ruff / mypy / pytest 配置
+│   ├── scripts/devctl.py     # 本地一键 init / migrate / up / down / status
+│   ├── libs/platform_common/ # 共享库：配置基类、DB、Redis、错误、响应、鉴权、数据权限、事件、操作日志
+│   └── services/
+│       ├── iam/              # 认证与权限服务 :8301
+│       ├── kb/               # 知识库服务 :8302（main.py）+ 文档处理 worker（worker.py）
+│       ├── open/             # 开放平台服务 :8303（API 密钥、开放检索、调用日志）
+│       └── chat/             # 二期预留 :8304
 ├── docs/
-│   ├── templates/            # PRD / 技术方案 / 测试报告 / bug 记录模板
-│   ├── features/<YYYYMMDD-简称>/
-│   │   ├── input/            # 原始需求描述、截图等
-│   │   ├── prd.md            # 产品经理产出
-│   │   ├── tech-design.md    # 架构师产出
-│   │   └── test-report.md    # 测试产出
-│   └── bugfixes/<YYYYMMDD-简称>/
-│       ├── bugfix.md         # 现象、根因、修改点、影响范围
-│       ├── tech-design.md    # 仅跨端/改契约/改表结构/改权限模型时才有
-│       └── test-report.md
+│   ├── templates/
+│   ├── features/<YYYYMMDD-简称>/  (input/、prd.md、tech-design*.md、test-report.md)
+│   └── bugfixes/<YYYYMMDD-简称>/  (bugfix.md、tech-design.md、test-report.md)
 └── .claude/
-    ├── agents/               # 5 个子智能体
-    └── commands/             # /feature、/bugfix 流程命令
+    ├── agents/
+    └── commands/
 ```
 
 ## 2. 智能体团队与职责边界
@@ -41,14 +44,15 @@
 | `product-manager` | `docs/` | 写技术方案（表结构、接口、选型）、改代码 |
 | `architect` | `docs/` | 改业务代码、改测试代码 |
 | `frontend-dev` | `frontend/`、需求目录下的实现说明 | 改后端、私自改接口契约 |
-| `backend-dev` | `backend/`、`docker-compose.yml`、需求目录下的实现说明 | 改前端、私自改接口契约 |
-| `qa-tester` | `backend/tests/integration/`、`frontend/e2e/`、`test-report.md` | 改业务代码（只报缺陷） |
+| `backend-dev` | `backend/`、`docker/`、需求目录下的实现说明 | 改前端、私自改接口契约、跨服务 import 业务代码 |
+| `qa-tester` | `backend/services/*/tests/integration/`、`backend/tests_e2e_api/`、`frontend/e2e/`、`test-report.md` | 改业务代码（只报缺陷） |
 
 通用规则：
 - **子智能体不执行任何 git 写操作**（commit / push / merge / reset / checkout 分支等），git 由主会话负责。
 - 子智能体之间不能直接通信，一律通过 `docs/` 下的文档交接。
 - 接口契约以 `tech-design.md` 为准。开发发现契约不合理时，**不得私改**，在返回结果中提出"契约变更申请"，由主会话交给架构师更新文档后再继续。
 - 引用需求统一用编号：功能点 `F-xx`、验收标准 `AC-xx`、后端任务 `BE-xx`、前端任务 `FE-xx`、缺陷 `BUG-xx`。
+- 后端任务（BE-xx）必须注明所属服务；一个任务只改一个服务目录（共享库任务除外）。
 
 ## 3. 技术栈基线
 
@@ -71,40 +75,45 @@
 - 测试：pytest + pytest-asyncio + httpx（AsyncClient）
 
 ### 中间件与部署
-- 本地：`docker compose` 只起中间件 —— **PostgreSQL 16 + Redis 7**
-- 前后端本地开发**不进容器**
-- 生产：Docker 部署（Dockerfile 由"项目初始化"需求规划）
+- 本地：`cd docker && docker compose up -d` **一键起全栈**（PostgreSQL 16（pgvector/pgvector:pg16）+ Redis 7 + MinIO + 一次性 init/迁移 + iam/kb/kb-worker/open + 前端 Nginx，访问 http://localhost:8300）；只起中间件用 `docker compose up -d postgres redis minio`
+- 向量检索用 pgvector，全文检索用 PostgreSQL tsvector + jieba 分词，异步任务与服务间事件用 Redis Streams；引入其他中间件须在 tech-design 中论证
+- 本机开发调试仍可不进容器（devctl + pnpm dev），但**与全栈应用容器互斥**（两套 kb-worker 会消费同一 Redis Stream）：devctl 检测到应用容器运行会拒绝启动，需先 `cd docker && docker compose stop iam kb kb-worker open web`
+- 生产：Docker 部署；每个后端服务一个镜像（`docker/backend/Dockerfile` + `SERVICE` 构建参数，构建上下文 `backend/`），前端为 Nginx 镜像（静态资源 + 反向代理）
 
 ## 4. 后端规范
 
-### 4.1 启动与配置
-- `backend/main.py` 创建 app，并包含：
+### 4.1 服务、启动与配置
+- 后端由多个独立服务组成，位于 `backend/services/<服务>/`；通用能力只能放在 `backend/libs/platform_common/`（禁止放业务模型）。**服务之间禁止 import 对方代码**，只能通过内部 HTTP（`/internal/v1/*`，`X-Internal-Token`）和 Redis Streams 交互。
+- 每个服务的 `main.py` 创建 app，并包含：
   ```python
   if __name__ == "__main__":
       uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, reload=False)
   ```
-- 启动方式：`cd backend && ../.venv/bin/python main.py`。**不开热加载**，修改后端代码后必须**重启进程**再验证。
-- 配置集中在 `backend/app/core/config.py`（pydantic-settings），**所有配置项带本地开发默认值**（默认连本地 compose 的 Postgres/Redis），可被 `backend/.env` 或环境变量覆盖。
-- `backend/.env` 不进 git；`backend/.env.example` 进 git，新增配置项时必须同步。
+  kb 服务另有 `worker.py`（文档处理进程，同样 `python worker.py` 启动）。
+- 启动单个服务：`cd backend/services/<服务> && ../../../.venv/bin/python main.py`；一键启动全部：`.venv/bin/python backend/scripts/devctl.py up`。**不开热加载**，修改后必须**重启进程**再验证（`devctl.py down` / `up`）。
+- 端口（本机多项目共用，统一使用专属端口）：iam 8301、kb 8302、open 8303、chat 8304（预留）；宿主机中间件 PostgreSQL 15432、Redis 16379、MinIO 19000（API）/19001（控制台）；前端 dev 5174；本地全栈前端 8300（仅 web 映射宿主机，iam/kb/open 不映射）。本地 compose 网络固定子网 `172.31.78.0/24`（Nginx `172.31.78.10`，`TRUSTED_PROXIES` 只含它），生产为 `172.31.77.0/24`，新网段须避开 `docker network ls` 已用网段。容器内端口不变，生产部署不受影响。
+- **严禁按端口杀进程**：停止服务只能针对本项目启动的进程（`devctl.py` 记录的 PID 或 cwd 位于 `backend/services/` 下的进程），不得终止其他项目的进程。
+- 配置：共享库提供 `BaseServiceSettings`，各服务在 `app/core/config.py` 继承扩展；**所有配置项带本地开发默认值**，可被 `backend/services/<服务>/.env` 或环境变量覆盖。`.env` 不进 git，`.env.example` 进 git，新增配置项必须同步。
+- 共享库以可编辑方式安装：`.venv/bin/pip install -e backend/libs/platform_common`。
 
-### 4.2 分层（单向依赖：api → service → repository → model）
+### 4.2 分层（每个服务内部，单向依赖：api → service → repository → model）
 ```
-backend/
-  main.py
-  requirements.txt / requirements-dev.txt
-  alembic.ini / alembic/
+backend/services/<服务>/
+  main.py  [worker.py]
+  alembic.ini / alembic/          # 本服务独立迁移链，version_table 位于本服务 schema
   app/
-    core/          # config、security(JWT/密码哈希)、database、redis、logging、exceptions
-    deps/          # get_db、get_current_user、require_perm、data_scope
-    models/        # SQLAlchemy ORM（按模块分文件）
+    core/          # 本服务 config、常量
+    deps/          # 本服务特有依赖（通用依赖来自 platform_common）
+    models/        # ORM，__table_args__ = {"schema": "<服务名>"}
     schemas/       # Pydantic 请求/响应
-    repositories/  # 所有查询；数据权限过滤在此统一注入
+    repositories/  # 所有查询；数据权限过滤统一调用 platform_common 的 data_scope_filter
     services/      # 业务逻辑、事务边界
-    api/v1/        # 路由：只收参、声明权限、调 service
+    api/v1/        # 对外路由：只收参、声明权限、调 service
+    api/internal/  # 内部路由（服务间调用）
   tests/           # 不进 git：unit/（开发写）、integration/（测试写）
 ```
 - 路由层不写业务、不直接操作 session。
-- 全异步：`async def` + asyncpg，请求链路中不做阻塞 IO。
+- 全异步：`async def` + asyncpg，请求链路中不做阻塞 IO；CPU 密集操作（文档解析、分词）放进程池或 worker。
 
 ### 4.3 接口约定
 - 前缀 `/api/v1`，RESTful 资源命名，复数名词。
@@ -112,13 +121,20 @@ backend/
 - 业务错误抛 `BizError(code, message)`，由全局异常处理器转换；不向前端暴露堆栈。
 - **每个接口必须声明权限**：`dependencies=[Depends(require_perm("system:user:create"))]`；公开接口必须显式标注为 public 并在技术方案中说明。
 - 以 FastAPI 生成的 OpenAPI 为契约事实来源，前端类型由 `openapi-typescript` 生成。
+- 对外路由前缀与服务映射：`/api/v1/auth`、`/api/v1/system` → iam；`/api/v1/kb` → kb；`/api/v1/open-platform`、`/api/v1/open` → open；`/api/v1/chat` → chat。新增前缀须同步 Vite proxy 与 Nginx 配置。
+- HTTP 状态码与错误类别一致（400/401/403/404/409/429/500/503），响应体始终为统一格式；`code = HTTP 状态 × 1000 + 序号`，序号段：通用 000~099、iam 100~299、kb 300~599、open 600~799、chat 800~899。
+- 每个服务各自生成 OpenAPI（`/openapi.json`），前端分别生成类型。
 
 ### 4.4 数据库约定
 - 主键 `id BIGINT` 自增。
 - 所有表含：`created_at`、`updated_at`、`created_by`、`updated_by`、`is_deleted`（逻辑删除）。
 - 表结构变更**必须**走 Alembic 迁移，禁止 `metadata.create_all`。
+  - 例外：kb 的向量 HNSW 索引（`kb.ix_seg_hnsw_m{模型ID}`、`kb.ix_child_hnsw_m{模型ID}`）依赖运行时的模型 ID 与维度，由 kb-worker 以 `CREATE INDEX CONCURRENTLY` 在运行时创建、对账与删除，不走 Alembic。除此之外的任何表结构/索引变更仍必须走 Alembic 迁移（用户 2026-11-12 确认）。
 - 受数据权限控制的业务表**必须**含 `company_id`、`dept_id`、`created_by`。
 - 登录、授权变更、删除等关键操作写操作日志表。
+- 一个 PostgreSQL 实例、一个库（`kbp`，测试库 `kbp_test`），**每个服务一个 schema**（iam / kb / open / chat）。禁止跨 schema 的外键、JOIN 和子查询；跨服务引用只存 ID，需要展示/筛选时使用本服务的只读副本表（由事件同步）或内部接口。
+- 纯关联表允许物理删除（仍继承基类字段）；其他业务表逻辑删除。
+- 受控表的 `dept_id` 表示"数据所属组织节点"（部门，或直属公司时为公司节点）。
 
 ## 5. 认证与权限模型（RBAC + 组织 + 数据权限）
 
@@ -164,6 +180,12 @@ backend/
 - 按钮权限只能用 `<Access code="...">` 或 `usePermission()`，**禁止**按角色名硬编码判断。
 - 前端隐藏只是体验，**安全边界在后端**。
 
+### 5.6 多服务下的认证与权限
+- iam 用 RS256 私钥签发 access token；其他服务只持有公钥本地验签。
+- 每个请求由共享库 `get_auth_context` 校验：JWT → Redis 会话（`auth:sess:{sid}`，保证登出/改密/停用即时失效）→ 权限上下文（`authz:ctx:{user_id}`，未命中时调 iam 内部接口）。
+- 权限码与数据范围只从权限上下文获取，任何服务不得自行查询 iam 的表。
+- API 密钥只用于开放检索，由 open 服务校验。
+
 ## 6. 前端规范
 
 ```
@@ -186,13 +208,13 @@ frontend/src/
 
 | 类型 | 负责人 | 位置 | 工具 |
 |---|---|---|---|
-| 后端单元/接口测试 | backend-dev | `backend/tests/unit/` | pytest |
+| 后端单元/接口测试 | backend-dev | `backend/services/<服务>/tests/unit/`、`backend/libs/platform_common/tests/` | pytest |
 | 前端单测 | frontend-dev | `frontend/src/**/*.test.ts(x)` | Vitest |
-| 后端集成测试（按 AC） | qa-tester | `backend/tests/integration/` | pytest + httpx，真实 Postgres/Redis |
+| 后端集成测试（按 AC） | qa-tester | `backend/services/<服务>/tests/integration/`（跨服务场景放 `backend/tests_e2e_api/`） | pytest + httpx，真实 Postgres/Redis/MinIO，全部服务启动 |
 | E2E | qa-tester | `frontend/e2e/` | Playwright |
 
 - **测试代码和运行产物不进 git**；测试报告 `test-report.md` 进 git。
-- 测试库使用独立数据库（如 `app_test`），不得污染开发库。
+- 测试库使用独立数据库 `kbp_test`，不得污染开发库。
 
 ## 8. Git 规范
 
@@ -205,23 +227,37 @@ frontend/src/
 ## 9. 常用命令
 
 ```bash
-# 中间件
+# 本地一键全栈（在 docker/ 目录执行；首次自动构建；访问 http://localhost:8300，admin / Admin12345 首次强制改密）
+cd docker
 docker compose up -d
+docker compose up -d --build                # 改代码后重建（也可只重建某服务：up -d --build kb kb-worker）
+docker compose logs -f kb-worker
+docker compose stop                          # 停止（down 删除容器，数据保留；勿加 -v）
+docker compose up -d postgres redis minio    # 只起中间件（本机 devctl 开发时）
+# devctl 运行产物：backend/.run（pid）、backend/logs（日志）；容器数据：docker/data
 
 # 后端环境（首次）
 python3.12 -m venv .venv
 .venv/bin/pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+.venv/bin/pip install -e backend/libs/platform_common
+.venv/bin/python backend/scripts/devctl.py init       # 生成本地 JWT 密钥对
 
-# 后端
-cd backend && ../.venv/bin/alembic upgrade head
-cd backend && ../.venv/bin/python main.py
-cd backend && ../.venv/bin/ruff check . && ../.venv/bin/mypy app
-cd backend && ../.venv/bin/pytest
+# 迁移与启动（全部服务）
+.venv/bin/python backend/scripts/devctl.py migrate    # 依次 iam → kb → open，并执行 iam seed
+.venv/bin/python backend/scripts/devctl.py up         # 前台；加 -d 后台；可指定服务：up iam kb
+.venv/bin/python backend/scripts/devctl.py down
+.venv/bin/python backend/scripts/devctl.py --env test migrate   # 测试库 kbp_test
 
-# 前端
+# 单个服务（以 iam 为例）
+cd backend/services/iam && ../../../.venv/bin/alembic upgrade head
+cd backend/services/iam && ../../../.venv/bin/python main.py
+cd backend/services/iam && ../../../.venv/bin/mypy app && ../../../.venv/bin/pytest tests/unit
+cd backend && ../.venv/bin/ruff check . && ../.venv/bin/ruff format --check .
+
+# 前端（首次需安装 pnpm：corepack enable && corepack prepare pnpm@9 --activate）
 cd frontend && pnpm install && pnpm dev
+cd frontend && pnpm gen:api                           # 从三个服务的 /openapi.json 生成类型（服务需已启动）
 cd frontend && pnpm tsc --noEmit && pnpm lint && pnpm build
 cd frontend && pnpm test
 cd frontend && pnpm exec playwright test
 ```
-（以上命令在"项目初始化"需求完成后生效。）

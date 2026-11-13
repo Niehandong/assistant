@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "platform-common"
+version = "0.1.0"
+description = "知识库平台共享库（配置、数据库、鉴权、事件、日志等）"
+requires-python = ">=3.12"
+
+[tool.setuptools.packages.find]
+include = ["platform_common*"]

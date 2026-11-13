@@ -1,0 +1,19 @@
+# 构建上下文为 backend/（本文件是 Dockerfile 专属 ignore，BuildKit 读取）：密钥、环境文件、测试、缓存一律不进镜像
+**/.env
+**/.env.*
+**/.secrets
+**/tests
+**/tests_e2e_api
+**/__pycache__
+**/*.py[cod]
+**/.mypy_cache
+**/.ruff_cache
+**/.pytest_cache
+**/*.egg-info
+**/.venv
+.coverage*
+# 开发辅助脚本（devctl、压测造数）不进生产镜像
+scripts
+services/*/scripts
+.run
+logs
